@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OMX SCAN CONTROL</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+
+<div id="app" v-cloak>
+  <div class="shell">
+
+    <!-- ══════════════ 1. HEADER ══════════════ -->
+    <header class="header">
+      <div>
+        <h1 class="display">OMX SCAN CONTROL</h1>
+        <div class="mono mono--xs header__meta">
+          LEROBOT ACT + DEFECT CLASSIFICATION DATA CAPTURE
+        </div>
+      </div>
+
+      <div class="header__right">
+        <span v-if="meta.simulate" class="status-pill">SIMULATION</span>
+        <span class="status-pill">
+          <span class="dot" :class="{ 'dot--on': allConnected }"></span>
+          {{ connectedCount }} / {{ totalCount }} PORTS
+        </span>
+        <span class="status-pill">
+          <span class="dot" :class="recording ? 'dot--busy' : 'dot--on'"></span>
+          {{ status.recording.state }}
+        </span>
+      </div>
+    </header>
+
+    <!-- ══════════════ 2. PORT MONITORING ══════════════ -->
+    <section class="section">
+      <div class="section__head">
+        <div>
+          <div class="eyebrow">PORT MONITORING</div>
+          <h2 class="title" style="margin-top:8px">장치 연결 상태</h2>
+        </div>
+        <div class="btn-row">
+          <button class="btn" @click="refreshPorts" :disabled="busy.ports">
+            {{ busy.ports ? 'SCANNING…' : 'REFRESH PORTS' }}
+          </button>
+          <button class="btn" @click="testConnections" :disabled="busy.test">
+            {{ busy.test ? 'TESTING…' : 'TEST CONNECTIONS' }}
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid--ports">
+        <!-- 로봇팔 -->
+        <article v-for="arm in ports.arms" :key="arm.role" class="card port">
+          <div class="port__top">
+            <span class="port__name">OMX {{ arm.role === 'leader' ? 'LEADER' : 'FOLLOWER' }}</span>
+            <span class="dot" :class="{ 'dot--on': arm.connected }"></span>
+          </div>
+          <div class="port__path">{{ arm.device || '/dev/ttyACM — UNRESOLVED' }}</div>
+          <div v-if="arm.error" class="port__error">{{ arm.error }}</div>
+          <div class="port__facts">
+            <span class="mono mono--xs">{{ arm.connected ? 'ONLINE' : 'OFFLINE' }}</span>
+            <span class="mono mono--xs">S/N {{ arm.serial_number || '—' }}</span>
+            <button class="chip" @click="identify(arm.role)">IDENTIFY</button>
+          </div>
+        </article>
+
+        <!-- 카메라 -->
+        <article v-for="cam in ports.cameras" :key="cam.name" class="card port">
+          <div class="port__top">
+            <span class="port__name">CAM {{ cam.name }}</span>
+            <span class="dot" :class="{ 'dot--on': cam.connected }"></span>
+          </div>
+          <div class="port__path">{{ cam.device }}</div>
+          <div v-if="cam.error" class="port__error">{{ cam.error }}</div>
+          <div class="port__facts">
+            <span class="mono mono--xs">{{ cam.resolution }}</span>
+            <span class="mono mono--xs" :class="{ 'mono--sunset': cam.connected && cam.fps < cam.target_fps * 0.7 }">
+              {{ cam.fps.toFixed(1) }} FPS
+            </span>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- ══════════════ 3. LIVE SCAN ══════════════ -->
+    <section class="section">
+      <div class="section__head">
+        <div>
+          <div class="eyebrow">LIVE SCAN</div>
+          <h2 class="title" style="margin-top:8px">실시간 프리뷰</h2>
+        </div>
+        <div class="btn-row">
+          <button class="btn" @click="toggleTeleop" :disabled="busy.teleop">
+            {{ status.teleop.running ? 'STOP TELEOP' : 'START TELEOP' }}
+          </button>
+          <button class="btn" @click="goHome" :disabled="busy.home || recording">
+            {{ busy.home ? 'HOMING…' : 'HOME POSITION' }}
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid--scan" style="margin-bottom:24px">
+        <article
+          v-for="cam in cameraViews"
+          :key="cam.name"
+          class="card card--flush preview"
+          :class="{ 'preview--recording': recording && cam.connected }">
+          <div class="preview__frame">
+            <img v-if="cam.connected" :src="cam.streamUrl" :alt="cam.name + ' 카메라 프리뷰'">
+            <div v-else class="preview__empty">
+              <span class="mono mono--sm">NO SIGNAL</span>
+            </div>
+          </div>
+          <div class="preview__caption">
+            <span class="mono mono--sm mono--ink">{{ cam.name }}</span>
+            <span class="mono mono--xs">{{ cam.fps.toFixed(1) }} FPS</span>
+          </div>
+        </article>
+      </div>
+
+      <!-- 관절 각도 스트립 -->
+      <div class="joints" style="margin-bottom:12px">
+        <span class="joints__label">LEADER</span>
+        <div class="joints__values">
+          <div v-for="(v, i) in status.leader.joints" :key="'l' + i" class="joint">
+            <span class="mono mono--xs">J{{ i }}</span>
+            <span class="joint__value">{{ fmtDeg(v) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="joints">
+        <span class="joints__label">FOLLOWER</span>
+        <div class="joints__values">
+          <div v-for="(v, i) in status.follower.joints" :key="'f' + i" class="joint">
+            <span class="mono mono--xs">J{{ i }}</span>
+            <span class="joint__value">{{ fmtDeg(v) }}</span>
+          </div>
+        </div>
+        <span class="mono mono--xs" style="margin-left:auto; white-space:nowrap">
+          Δ MAX {{ meta.max_relative_target }}°/TICK
+        </span>
+      </div>
+
+      <div v-if="status.teleop.fault" class="port__error" style="margin-top:12px">
+        TELEOP FAULT — {{ status.teleop.fault }}
+      </div>
+    </section>
+
+    <!-- ══════════════ 4. LABELING & COLLECTION ══════════════ -->
+    <section class="section">
+      <div class="section__head">
+        <div>
+          <div class="eyebrow">LABELING &amp; COLLECTION</div>
+          <h2 class="title" style="margin-top:8px">라벨링 및 수집</h2>
+        </div>
+        <span class="mono mono--xs">{{ meta.sample_rate_hz }} HZ SAMPLING</span>
+      </div>
+
+      <div class="card">
+        <div class="grid grid--form">
+          <div class="field">
+            <label class="field__label" for="episode-id">EPISODE ID</label>
+            <input id="episode-id" class="input" v-model="form.episodeId"
+                   :disabled="recording" placeholder="000042" autocomplete="off">
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="object-id">OBJECT ID</label>
+            <input id="object-id" class="input" v-model="form.objectId"
+                   :disabled="recording" placeholder="bracket_a01" autocomplete="off">
+          </div>
+
+          <div class="field">
+            <span class="field__label">QUALITY LABEL</span>
+            <div class="toggle-group">
+              <button class="toggle" :class="{ 'toggle--on': form.label === 'good' }"
+                      :disabled="recording" @click="setLabel('good')">GOOD</button>
+              <button class="toggle" :class="{ 'toggle--on': form.label === 'defect' }"
+                      :disabled="recording" @click="setLabel('defect')">DEFECT</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- DEFECT 선택 시에만 노출 -->
+        <div v-if="form.label === 'defect'" class="reveal">
+          <span class="field__label">DEFECT TYPE</span>
+          <div class="chip-row">
+            <button v-for="t in meta.defect_types" :key="t" class="chip"
+                    :class="{ 'chip--on': form.defectType === t }"
+                    :disabled="recording" @click="form.defectType = t">
+              {{ t }}
+            </button>
+          </div>
+        </div>
+
+        <div class="btn-row" style="margin-top:24px">
+          <button class="btn btn--primary" @click="startRecording"
+                  :disabled="recording || busy.record || !canStart">
+            START RECORDING
+          </button>
+          <button class="btn" @click="stopRecording" :disabled="!recording || busy.record">
+            STOP
+          </button>
+        </div>
+
+        <div class="summary">
+          <div class="summary__item">
+            <span class="mono mono--xs">STATE</span>
+            <span class="summary__value" :class="{ 'mono--sunset': recording }">
+              {{ status.recording.state }}
+            </span>
+          </div>
+          <div class="summary__item">
+            <span class="mono mono--xs">EPISODES</span>
+            <span class="summary__value">{{ status.recording.total_episodes }}</span>
+          </div>
+          <div class="summary__item">
+            <span class="mono mono--xs">FRAMES</span>
+            <span class="summary__value">{{ status.recording.frame_count }}</span>
+          </div>
+          <div class="summary__item">
+            <span class="mono mono--xs">ELAPSED</span>
+            <span class="summary__value">{{ status.recording.elapsed_sec.toFixed(1) }}S</span>
+          </div>
+          <div class="summary__item">
+            <span class="mono mono--xs">SYNC SKEW</span>
+            <span class="summary__value" :class="{ 'mono--sunset': status.recording.skew_violations > 0 }">
+              {{ status.recording.max_skew_ms.toFixed(1) }}MS
+            </span>
+          </div>
+          <div class="summary__item">
+            <span class="mono mono--xs">GOOD / DEFECT</span>
+            <span class="summary__value">
+              {{ status.recording.good_objects }} / {{ status.recording.defect_objects }}
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════ 5. TRAINING METRICS ══════════════ -->
+    <section class="section">
+      <div class="section__head">
+        <div>
+          <div class="eyebrow">ACT TRAINING METRICS</div>
+          <h2 class="title" style="margin-top:8px">ACT 학습 · 실시간</h2>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn--primary" @click="startTraining"
+                  :disabled="training.running || busy.train">
+            START TRAINING
+          </button>
+          <button class="btn" @click="stopTraining"
+                  :disabled="!training.running || busy.train">STOP</button>
+        </div>
+      </div>
+
+      <!-- 학습 파라미터 -->
+      <div class="card" style="margin-bottom:12px">
+        <div class="grid grid--form">
+          <div class="field">
+            <label class="field__label" for="tr-epochs">EPOCHS</label>
+            <input id="tr-epochs" class="input" type="number" min="1" max="500"
+                   v-model.number="training.params.epochs" :disabled="training.running">
+          </div>
+          <div class="field">
+            <label class="field__label" for="tr-thr">성공 임계값 (DEG)</label>
+            <input id="tr-thr" class="input" type="number" min="0.5" max="30" step="0.5"
+                   v-model.number="training.params.threshold_deg" :disabled="training.running">
+          </div>
+          <div class="field">
+            <label class="field__label" for="tr-lr">LEARNING RATE</label>
+            <input id="tr-lr" class="input" type="number" min="0.00001" max="0.01" step="0.00001"
+                   v-model.number="training.params.lr" :disabled="training.running">
+          </div>
+          <div class="field">
+            <span class="field__label">MODE</span>
+            <div class="toggle-group">
+              <button class="toggle" :class="{ 'toggle--on': training.params.demo }"
+                      :disabled="training.running" @click="training.params.demo = true">DEMO</button>
+              <button class="toggle" :class="{ 'toggle--on': !training.params.demo }"
+                      :disabled="training.running" @click="training.params.demo = false">LEROBOT</button>
+            </div>
+          </div>
+        </div>
+        <div class="mono mono--xs" style="margin-top:12px">
+          DEMO = 합성 학습 곡선(하드웨어·GPU 불필요) · LEROBOT = 실제 lerobot ACT 학습
+        </div>
+      </div>
+
+      <div v-if="training.records.length === 0 && !training.running" class="card">
+        <div class="mono mono--sm" style="text-align:center; padding:24px 0">
+          START TRAINING 을 눌러 학습을 시작하면 지표가 실시간으로 표시됩니다
+        </div>
+      </div>
+
+      <template v-else>
+        <!-- KPI 스트립: ACT 회귀 지표 -->
+        <div class="grid grid--form" style="margin-bottom:24px">
+          <div class="card kpi">
+            <span class="mono mono--xs">TRAIN L1 LOSS</span>
+            <span class="kpi__value">{{ fmtNum(training.kpi.trainLoss) }}</span>
+            <span class="mono mono--xs" :class="training.kpi.lossTrend <= 0 ? 'mono--body' : 'mono--sunset'">
+              {{ training.kpi.lossTrend <= 0 ? '▼' : '▲' }} {{ fmtNum(Math.abs(training.kpi.lossTrend)) }}
+            </span>
+          </div>
+          <div class="card kpi">
+            <span class="mono mono--xs">VAL MAE (DEG)</span>
+            <span class="kpi__value">{{ fmtNum(training.kpi.valMae) }}°</span>
+            <span class="mono mono--xs">평균 관절 오차</span>
+          </div>
+          <div class="card kpi">
+            <span class="mono mono--xs">성공률 SUCCESS@τ</span>
+            <span class="kpi__value">{{ fmtPct(training.kpi.successRate) }}</span>
+            <span class="mono mono--xs">{{ training.params.threshold_deg }}° 이내 예측</span>
+          </div>
+          <div class="card kpi">
+            <span class="mono mono--xs">EPOCH</span>
+            <span class="kpi__value">{{ training.kpi.epoch }} / {{ training.params.epochs }}</span>
+            <span class="mono mono--xs" :class="{ 'mono--sunset': training.running }">
+              {{ training.state }}
+            </span>
+          </div>
+        </div>
+
+        <!-- 손실 곡선 (train/val) -->
+        <div class="card card--flush" style="padding:16px">
+          <div class="chart__head">
+            <span class="mono mono--sm mono--ink">LOSS CURVE (L1)</span>
+            <div class="chart__legend">
+              <span class="legend"><i class="legend__dot legend__dot--train"></i>TRAIN</span>
+              <span class="legend"><i class="legend__dot legend__dot--val"></i>VAL</span>
+            </div>
+          </div>
+          <canvas ref="lossChart" class="chart"></canvas>
+        </div>
+
+        <!-- 성공률 곡선 -->
+        <div class="card card--flush" style="padding:16px; margin-top:12px">
+          <div class="chart__head">
+            <span class="mono mono--sm mono--ink">SUCCESS RATE (@ {{ training.params.threshold_deg }}°)</span>
+          </div>
+          <canvas ref="successChart" class="chart"></canvas>
+        </div>
+
+        <!-- 관절별 MAE -->
+        <div class="card card--flush" style="padding:16px; margin-top:12px">
+          <div class="chart__head">
+            <span class="mono mono--sm mono--ink">관절별 평균절대오차 (MAE, DEG)</span>
+          </div>
+          <div class="joint-bars">
+            <div v-for="j in training.jointMae" :key="j.name" class="joint-bar">
+              <span class="mono mono--xs">{{ j.name.toUpperCase() }}</span>
+              <div class="joint-bar__track">
+                <div class="joint-bar__fill" :style="{ width: j.pct + '%' }"
+                     :class="{ 'joint-bar__fill--warn': j.value > training.params.threshold_deg }"></div>
+              </div>
+              <span class="mono mono--xs joint-bar__val">{{ fmtNum(j.value) }}°</span>
+            </div>
+          </div>
+        </div>
+      </template>
+    </section>
+
+    <!-- ══════════════ 6. 3D SCAN INSPECTION ══════════════ -->
+    <section class="section">
+      <div class="section__head">
+        <div>
+          <div class="eyebrow">3D SCAN INSPECTION</div>
+          <h2 class="title" style="margin-top:8px">3D 형상 검사</h2>
+        </div>
+        <div class="btn-row">
+          <select class="input" style="min-width:200px" v-model="scan.selectedKey">
+            <option :value="null" disabled>OBJECT 선택</option>
+            <option v-for="o in scan.objects" :key="o.label + '/' + o.object_id"
+                    :value="o.label + '/' + o.object_id">
+              {{ o.object_id }} · {{ o.label.toUpperCase() }} ({{ o.views.length }}뷰)
+            </option>
+          </select>
+          <button class="btn" @click="refreshObjects" :disabled="busy.objects">
+            {{ busy.objects ? 'LOADING…' : 'REFRESH' }}
+          </button>
+          <button class="btn btn--sunset" @click="reconstruct" :disabled="!scan.selectedKey || busy.recon">
+            {{ busy.recon ? 'RECONSTRUCTING…' : 'RECONSTRUCT 3D' }}
+          </button>
+          <button class="btn" @click="reconstructDemo" :disabled="busy.recon">DEMO</button>
+          <button class="btn" @click="resetView" :disabled="!scan.hasMesh">RESET VIEW</button>
+        </div>
+      </div>
+
+      <!-- CNN 판정 결과 스트립 -->
+      <div v-if="scan.hasMesh" class="grid grid--form" style="margin-bottom:12px">
+        <div class="card kpi">
+          <span class="mono mono--xs">CNN 판정</span>
+          <span class="kpi__value" :class="{ 'mono--sunset': scan.stats.classification.label === 'defect' }">
+            {{ (scan.stats.classification.label || 'UNKNOWN').toUpperCase() }}
+          </span>
+          <span class="mono mono--xs">신뢰도 {{ fmtPct(scan.stats.classification.confidence || 0) }}</span>
+        </div>
+        <div class="card kpi">
+          <span class="mono mono--xs">불량 영역</span>
+          <span class="kpi__value">{{ scan.stats.num_defect_regions }}</span>
+          <span class="mono mono--xs">하이라이트 표시됨</span>
+        </div>
+        <div class="card kpi">
+          <span class="mono mono--xs">MESH</span>
+          <span class="kpi__value">{{ scan.stats.num_vertices }}</span>
+          <span class="mono mono--xs">{{ scan.stats.num_faces }} FACES</span>
+        </div>
+        <div class="card kpi">
+          <span class="mono mono--xs">복셀 점유율</span>
+          <span class="kpi__value">{{ fmtPct(scan.stats.voxel_occupancy) }}</span>
+          <span class="mono mono--xs">{{ scan.stats.num_views }}뷰 재구성</span>
+        </div>
+      </div>
+
+      <div v-if="!scan.hasMesh" class="card">
+        <div class="mono mono--sm" style="text-align:center; padding:24px 0">
+          OBJECT 를 선택하고 RECONSTRUCT 3D 를 누르세요 · 데이터 없이 보려면 DEMO
+        </div>
+      </div>
+
+      <div v-show="scan.hasMesh" class="card card--flush viewer">
+        <div ref="viewerCanvas" class="viewer__canvas"></div>
+        <div class="viewer__hud">
+          <div class="mono mono--xs">
+            <span class="dot" :class="scan.stats.classification && scan.stats.classification.label === 'defect' ? '' : 'dot--on'"
+                  style="display:inline-block; margin-right:6px"></span>
+            {{ scan.currentObject }} · VISUAL HULL
+          </div>
+          <div class="mono mono--xs mono--sunset" v-if="scan.stats.num_defect_regions > 0">
+            ● 오렌지 영역 = 불량 부위
+          </div>
+          <div class="mono mono--xs">DRAG 회전 · SCROLL 확대</div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- 토스트 -->
+  <div class="toast-stack">
+    <div v-for="t in toasts" :key="t.id" class="toast" :class="{ 'toast--error': t.kind === 'error' }">
+      <span class="mono mono--xs" style="padding-top:2px">{{ t.kind === 'error' ? 'ERROR' : 'OK' }}</span>
+      <span>{{ t.message }}</span>
+      <button class="toast__close" @click="dismiss(t.id)" aria-label="알림 닫기">✕</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<!-- 3D 스캔 뷰어용. r128 은 아티팩트 환경 제약과 동일 버전으로 고정. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="/static/js/chart.js"></script>
+<script src="/static/js/scan_viewer.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

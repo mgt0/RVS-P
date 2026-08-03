@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.DS_Store
+
+# 수집된 데이터는 버전관리 대상이 아니다 (용량 + 바이너리)
+lerobot_data/episodes/
+lerobot_data/classification/
