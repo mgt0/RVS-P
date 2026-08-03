@@ -1,0 +1,650 @@
+/* =============================================================
+   COMPONENTS
+   규칙: 그림자 없음. 그라디언트 없음. 사각 버튼 없음.
+   solid 흰색 채움은 START RECORDING 과 선택된 GOOD/DEFECT 뿐.
+   ============================================================= */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--canvas);
+  color: var(--body);
+  font-family: var(--font-display);
+  font-weight: var(--weight);
+  font-size: var(--fs-body);
+  letter-spacing: var(--ls-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Vue 마운트 전 깜빡임 방지 */
+[v-cloak] { display: none; }
+
+/* 키보드 포커스는 항상 보이게. 아웃라인 톤과 일관되게 흰색 링. */
+:focus-visible {
+  outline: 1px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* ---------- 레이아웃 ---------- */
+.shell {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: var(--s-8) var(--s-6) var(--s-16);
+}
+
+.section { margin-top: var(--s-12); }
+.section:first-of-type { margin-top: var(--s-8); }
+
+.section__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding-bottom: var(--s-3);
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: var(--s-6);
+  flex-wrap: wrap;
+}
+
+/* ---------- 타이포 유틸 ---------- */
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  letter-spacing: var(--ls-mono);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.mono--sm { font-size: var(--fs-mono-sm); letter-spacing: var(--ls-mono-sm); }
+.mono--xs { font-size: var(--fs-mono-xs); letter-spacing: var(--ls-mono-xs); }
+.mono--ink { color: var(--ink); }
+.mono--body { color: var(--body); }
+.mono--sunset { color: var(--accent-sunset); }
+
+/* 섹션 eyebrow — 브리프가 지정한 "PORT MONITORING" 같은 라벨 */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  letter-spacing: var(--ls-mono);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.title {
+  font-size: var(--fs-title);
+  letter-spacing: var(--ls-title);
+  color: var(--ink);
+  margin: 0;
+  font-weight: var(--weight);
+}
+
+.display {
+  font-size: var(--fs-display);
+  letter-spacing: var(--ls-display);
+  color: var(--ink);
+  margin: 0;
+  font-weight: var(--weight);
+  line-height: 1.05;
+}
+
+/* ---------- 헤더 ---------- */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-6);
+  padding-bottom: var(--s-6);
+  border-bottom: 1px solid var(--hairline);
+  flex-wrap: wrap;
+}
+
+.header__meta { margin-top: var(--s-2); }
+
+.header__right {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+/* ---------- 상태 dot ---------- */
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  flex: 0 0 auto;
+  background: var(--dot-offline);
+}
+.dot--on { background: var(--dot-online); }
+.dot--busy {
+  background: var(--accent-sunset);
+  animation: pulse 1.4s var(--ease) infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}
+
+/* ---------- 상태 pill (비대화형) ---------- */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  letter-spacing: var(--ls-mono-sm);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* ---------- 버튼 (전부 pill) ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  min-height: 36px;
+  padding: var(--s-2) var(--s-4);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--outline);
+  background: transparent;
+  color: var(--body);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  letter-spacing: var(--ls-mono-sm);
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease),
+              background-color var(--dur-fast) var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--outline-hover);
+  color: var(--ink);
+  background: var(--wash);
+}
+
+.btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* 유일하게 허용된 solid — START RECORDING */
+.btn--primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--canvas);
+}
+.btn--primary:hover:not(:disabled) {
+  background: var(--body);
+  border-color: var(--body);
+  color: var(--canvas);
+}
+
+/* 스캔 진행 상태 강조에만 쓰는 선셋 아웃라인 */
+.btn--sunset {
+  border-color: var(--accent-sunset);
+  color: var(--accent-sunset);
+}
+.btn--sunset:hover:not(:disabled) {
+  background: transparent;
+  border-color: var(--accent-sunset);
+  color: var(--accent-sunset);
+}
+
+.btn-row {
+  display: flex;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+/* ---------- 카드 ---------- */
+.card {
+  background: var(--canvas-card);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  padding: var(--s-4);
+  /* box-shadow 금지 — elevation 은 hairline 보더로만 */
+}
+
+.card--flush { padding: 0; overflow: hidden; }
+
+.grid {
+  display: grid;
+  gap: var(--s-3);
+}
+.grid--ports  { grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); }
+.grid--scan   { grid-template-columns: repeat(auto-fill, minmax(272px, 1fr)); }
+.grid--form   { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--s-4); }
+
+/* ---------- 포트 카드 ---------- */
+.port {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  min-height: 108px;
+}
+
+.port__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+
+.port__name {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  letter-spacing: var(--ls-mono);
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.port__path {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  letter-spacing: var(--ls-mono-sm);
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.port__facts {
+  display: flex;
+  gap: var(--s-3);
+  margin-top: auto;
+  padding-top: var(--s-2);
+  border-top: 1px solid var(--hairline);
+  flex-wrap: wrap;
+}
+
+.port__error {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  letter-spacing: var(--ls-mono-xs);
+  color: var(--accent-sunset);
+  line-height: 1.5;
+  text-transform: none;
+}
+
+/* ---------- 프리뷰 ---------- */
+.preview { display: flex; flex-direction: column; }
+
+.preview__frame {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  background: var(--canvas-soft);
+  border-bottom: 1px solid var(--hairline);
+  overflow: hidden;
+}
+
+.preview__frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.preview__empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  padding: var(--s-4);
+}
+
+.preview__caption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+}
+
+/* 녹화 중 프리뷰 테두리 — 유일한 선셋 사용처 중 하나 */
+.preview--recording { border-color: var(--accent-sunset); }
+
+/* ---------- 관절 스트립 ---------- */
+.joints {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--canvas-card);
+  overflow-x: auto;
+}
+
+.joints__label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  letter-spacing: var(--ls-mono-sm);
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+  min-width: 76px;
+}
+
+.joints__values { display: flex; gap: var(--s-3); }
+
+.joint {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  min-width: 62px;
+}
+
+.joint__value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  letter-spacing: var(--ls-mono-sm);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;  /* 숫자가 흔들리지 않게 */
+}
+
+/* ---------- 폼 ---------- */
+.field { display: flex; flex-direction: column; gap: var(--s-2); }
+
+.field__label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  letter-spacing: var(--ls-mono-sm);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.input {
+  width: 100%;
+  padding: var(--s-3) var(--s-4);
+  background: var(--canvas-soft);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  letter-spacing: var(--ls-mono-sm);
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.input::placeholder { color: var(--muted); text-transform: none; letter-spacing: 0; }
+.input:focus { border-color: var(--outline-hover); outline: none; }
+.input:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* 토글 — 선택된 쪽만 흰색 채움 */
+.toggle-group { display: flex; gap: var(--s-2); }
+
+.toggle {
+  flex: 1;
+  min-height: 40px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--outline);
+  background: transparent;
+  color: var(--body);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  letter-spacing: var(--ls-mono-sm);
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+}
+.toggle:hover:not(.toggle--on):not(:disabled) {
+  border-color: var(--outline-hover);
+  color: var(--ink);
+}
+.toggle--on {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--canvas);
+}
+.toggle:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* 불량 유형 — 작은 아웃라인 pill 들 */
+.chip-row { display: flex; gap: var(--s-2); flex-wrap: wrap; }
+
+.chip {
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--outline);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  letter-spacing: var(--ls-mono-xs);
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+}
+.chip:hover:not(.chip--on) { border-color: var(--outline-hover); color: var(--ink); }
+.chip--on {
+  border-color: var(--accent-sunset);
+  color: var(--accent-sunset);
+}
+
+/* 조건부 노출 영역 */
+.reveal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding-top: var(--s-4);
+  margin-top: var(--s-4);
+  border-top: 1px solid var(--hairline);
+}
+
+/* ---------- 수집 요약 스트립 ---------- */
+.summary {
+  display: flex;
+  gap: var(--s-8);
+  flex-wrap: wrap;
+  padding-top: var(--s-4);
+  margin-top: var(--s-4);
+  border-top: 1px solid var(--hairline);
+}
+
+.summary__item { display: flex; flex-direction: column; gap: var(--s-1); }
+
+.summary__value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-lead);
+  letter-spacing: 0;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 토스트 ---------- */
+.toast-stack {
+  position: fixed;
+  right: var(--s-6);
+  bottom: var(--s-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  z-index: 40;
+  max-width: 400px;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  background: var(--canvas-card);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  color: var(--body);
+  font-size: var(--fs-small);
+  line-height: 1.5;
+}
+.toast--error { border-color: var(--accent-sunset); }
+
+.toast__close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  padding: 0;
+}
+
+/* ---------- 반응형 ---------- */
+@media (max-width: 720px) {
+  :root {
+    --fs-display: 34px;  --ls-display: -0.9px;
+    --fs-title:   22px;  --ls-title:   -0.5px;
+  }
+  .shell { padding: var(--s-6) var(--s-4) var(--s-12); }
+  .joints { flex-direction: column; align-items: flex-start; gap: var(--s-2); }
+  .toast-stack { left: var(--s-4); right: var(--s-4); max-width: none; }
+}
+
+/* =============================================================
+   TRAINING METRICS · 3D SCAN (추가 컴포넌트)
+   기존 토큰만 참조. 리터럴 hex 금지.
+   ============================================================= */
+
+/* ---------- KPI 카드 ---------- */
+.kpi { display: flex; flex-direction: column; gap: var(--s-2); }
+
+.kpi__value {
+  font-family: var(--font-mono);
+  font-size: 26px;
+  letter-spacing: -0.3px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 차트 ---------- */
+.chart {
+  width: 100%;
+  height: 240px;
+  display: block;
+}
+
+.chart__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--s-3);
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+.chart__legend { display: flex; gap: var(--s-4); }
+
+.legend {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  letter-spacing: var(--ls-mono-xs);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.legend__dot { width: 8px; height: 2px; display: inline-block; }
+.legend__dot--train { background: var(--ink); }
+.legend__dot--val { background: var(--accent-sunset); }
+
+/* ---------- 관절별 오차 막대 ---------- */
+.joint-bars { display: flex; flex-direction: column; gap: var(--s-3); }
+
+.joint-bar {
+  display: grid;
+  grid-template-columns: 68px 1fr 56px;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+.joint-bar__track {
+  height: 6px;
+  background: var(--canvas-soft);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+
+.joint-bar__fill {
+  height: 100%;
+  background: var(--body);
+  transition: width var(--dur-base) var(--ease);
+}
+.joint-bar__fill--warn { background: var(--accent-sunset); }
+
+.joint-bar__val { text-align: right; color: var(--ink); }
+
+/* ---------- 혼동 행렬 ---------- */
+.confusion {
+  display: grid;
+  grid-template-columns: 90px 1fr 1fr;
+  gap: var(--s-2);
+  align-items: center;
+  max-width: 520px;
+}
+
+.confusion__rowlabel { text-align: right; padding-right: var(--s-2); }
+
+.confusion__cell {
+  padding: var(--s-6) var(--s-4);
+  background: var(--canvas-soft);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-lead);
+  color: var(--body);
+  font-variant-numeric: tabular-nums;
+}
+/* 정답 대각선만 흰색으로 강조 (색 남발 없이 위계만) */
+.confusion__cell--ok { color: var(--ink); border-color: var(--outline); }
+
+/* ---------- 3D 뷰어 ---------- */
+.viewer { position: relative; }
+
+.viewer__canvas {
+  width: 100%;
+  height: 460px;
+  background: var(--canvas-soft);
+  border-radius: var(--radius-card);
+  cursor: grab;
+}
+.viewer__canvas:active { cursor: grabbing; }
+.viewer__canvas canvas { display: block; border-radius: var(--radius-card); }
+
+.viewer__hud {
+  position: absolute;
+  left: var(--s-4);
+  bottom: var(--s-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  background: rgba(10, 10, 10, 0.72);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+}
+
+/* select 요소를 pill input 톤에 맞춤 */
+select.input {
+  text-transform: uppercase;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+select.input option { background: var(--canvas-card); color: var(--body); }
+
+@media (max-width: 720px) {
+  .viewer__canvas { height: 340px; }
+  .confusion { grid-template-columns: 64px 1fr 1fr; }
+}

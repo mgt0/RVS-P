@@ -1,0 +1,74 @@
+/* =============================================================
+   DESIGN TOKENS — 단일 진실 공급원(Single Source of Truth)
+   모든 색/간격/타이포는 여기서만 정의한다. 컴포넌트 CSS 에
+   리터럴 hex 를 쓰지 않는 것이 이 파일의 존재 이유다.
+   ============================================================= */
+
+:root {
+  /* ---------- 색상 ---------- */
+  --canvas:        #0a0a0a;   /* 페이지 전체의 유일한 배경 */
+  --canvas-soft:   #1a1c20;   /* 입력 필드, 프리뷰 바닥 */
+  --canvas-card:   #191919;   /* 카드 */
+  --hairline:      #212327;   /* 구분선 · 보더 — elevation 은 이것으로만 표현 */
+
+  --ink:           #ffffff;   /* 기본 텍스트 */
+  --body:          #dadbdf;   /* 보조 텍스트 */
+  --muted:         #7d8187;   /* 캡션 · 부가정보 */
+
+  --accent-sunset: #ff7a17;   /* 경고 / 스캔 진행 — 포인트로만 */
+  --accent-dusk:   #7c3aed;   /* 선택적 강조 */
+
+  /* 상태 dot 전용. 텍스트나 배경에는 쓰지 않는다. */
+  --dot-online:    #34d399;
+  --dot-offline:   #ef4444;
+
+  /* 아웃라인 버튼의 반투명 흰색 보더 */
+  --outline:       rgba(255, 255, 255, 0.22);
+  --outline-hover: rgba(255, 255, 255, 0.45);
+  --wash:          rgba(255, 255, 255, 0.04);
+
+  /* ---------- 타이포그래피 ---------- */
+  --font-display: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono:    'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* Inter 는 weight 400 고정. 굵기 대신 크기와 자간으로 위계를 만든다. */
+  --weight: 400;
+
+  --fs-display: 48px;  --ls-display: -1.2px;
+  --fs-title:   28px;  --ls-title:   -0.7px;
+  --fs-lead:    20px;  --ls-lead:    -0.4px;
+  --fs-body:    15px;  --ls-body:    -0.1px;
+  --fs-small:   13px;
+
+  /* 모노 캡션: 전부 UPPERCASE + 양의 자간. 브랜드 톤의 핵심. */
+  --fs-mono:      12px;  --ls-mono:      1.3px;
+  --fs-mono-sm:   11px;  --ls-mono-sm:   1.2px;
+  --fs-mono-xs:   10px;  --ls-mono-xs:   1.4px;
+
+  /* ---------- 여백 (4px 배수 스케일) ---------- */
+  --s-1:  4px;
+  --s-2:  8px;
+  --s-3:  12px;
+  --s-4:  16px;
+  --s-6:  24px;
+  --s-8:  32px;
+  --s-12: 48px;
+  --s-16: 64px;
+
+  /* ---------- 형태 ---------- */
+  --radius-card: 8px;
+  --radius-pill: 9999px;
+
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --ease: cubic-bezier(0.2, 0, 0.2, 1);
+}
+
+/* 모션 민감 사용자 존중 — 브리프의 절제된 톤과도 맞는다. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
