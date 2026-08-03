@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python -m pytest tests/ -k \"teleop or arm_controller or hardware\" -q)"
-    ]
-  }
-}
