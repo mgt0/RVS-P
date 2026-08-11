@@ -8,3 +8,7 @@ venv/
 # 수집된 데이터는 버전관리 대상이 아니다 (용량 + 바이너리)
 lerobot_data/episodes/
 lerobot_data/classification/
+
+# lerobot 연동(신규)으로 생기는 대용량 산출물 — 전부 로컬 재생성 가능하므로 커밋 안 함
+lerobot_data/lerobot_datasets/   # convert_episodes_to_dataset() 결과 (mp4 + parquet)
+lerobot_data/checkpoints/        # 학습된 ACT 정책 가중치

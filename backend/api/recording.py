@@ -40,6 +40,7 @@ def status():
             "leader": hub.leader.status(),
             "follower": hub.follower.status(),
             "teleop": hub.teleop_status,
+            "autorun": hub.autorun_status,
             "cameras": hub.cameras.status_all(),
         }
     )
@@ -71,6 +72,31 @@ def start_teleop():
 @bp.post("/teleop/stop")
 def stop_teleop():
     return jsonify({"ok": True, "teleop": _hub().stop_teleop()})
+
+
+@bp.post("/rollout/start")
+def start_rollout():
+    """학습된 ACT 정책으로 팔로워 자율 제어 시작.
+
+    body: {"checkpoint": "<경로 또는 생략>", "rate_hz": 10}
+    checkpoint 생략 시 가장 최근 학습 완료된 체크포인트를 자동으로 쓴다.
+    """
+    body = request.json or {}
+    result = _hub().start_autorun(
+        checkpoint=body.get("checkpoint"),
+        rate_hz=int(body.get("rate_hz", 10)),
+    )
+    return jsonify({"ok": True, "autorun": result})
+
+
+@bp.post("/rollout/stop")
+def stop_rollout():
+    return jsonify({"ok": True, "autorun": _hub().stop_autorun()})
+
+
+@bp.get("/rollout/status")
+def rollout_status():
+    return jsonify({"ok": True, "autorun": _hub().autorun_status})
 
 
 @bp.post("/arm/home")

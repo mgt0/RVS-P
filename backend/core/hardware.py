@@ -11,7 +11,7 @@ import logging
 import threading
 
 from ..config import AppConfig
-from ..utils.errors import ArmConnectionError
+from ..utils.errors import ArmConnectionError, ValidationError
 from .arm_controller import (
     ArmController,
     DynamixelBackend,
@@ -23,6 +23,7 @@ from .act_trainer import TrainingManager
 from .camera_manager import CameraManager
 from .port_finder import IdentifySession, PortRegistry
 from .recorder import Recorder
+from .rollout import AutoRunLoop
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,8 @@ class HardwareHub:
         self.recorder = Recorder(cfg.recording, self.cameras, self.leader, self.follower)
         self.training = TrainingManager(cfg.recording.root)
         self._teleop: TeleopLoop | None = None
+        self._autorun: AutoRunLoop | None = None
+        self._checkpoint_root = cfg.recording.root / "checkpoints"
         self._lock = threading.RLock()
 
     def _build_arm(self, role: str) -> ArmController:
@@ -73,6 +76,7 @@ class HardwareHub:
                     self.recorder.abort("서버 종료")
             finally:
                 self.stop_teleop()
+                self.stop_autorun()
                 for arm in (self.follower, self.leader):
                     try:
                         arm.disconnect(home_first=True)
@@ -84,6 +88,8 @@ class HardwareHub:
     # ---------------------------------------------------------------- 텔레오퍼
     def start_teleop(self) -> dict:
         with self._lock:
+            if self._autorun and self._autorun.is_alive():
+                raise ValidationError("autorun이 실행 중입니다. 먼저 ROLLOUT STOP을 누르세요.")
             if self._teleop and self._teleop.is_alive():
                 return {"running": True, "fault": self._teleop.fault}
             self.leader.connect()
@@ -110,6 +116,63 @@ class HardwareHub:
     def teleop_status(self) -> dict:
         running = bool(self._teleop and self._teleop.is_alive())
         return {"running": running, "fault": self._teleop.fault if self._teleop else None}
+
+    # ---------------------------------------------------------------- 자율실행(rollout)
+    def start_autorun(self, checkpoint: str | None = None, rate_hz: int = 10) -> dict:
+        """학습된 ACT 정책으로 팔로워를 자율 제어한다.
+
+        teleop과는 상호 배타적이다 — 둘 다 follower.write()를 호출하는
+        루프라 동시에 돌면 명령이 뒤섞인다. 반드시 하나만 실행되게 막는다.
+        """
+        with self._lock:
+            if self._teleop and self._teleop.is_alive():
+                raise ValidationError("teleop이 실행 중입니다. 먼저 TELEOP STOP을 누르세요.")
+            if self._autorun and self._autorun.is_alive():
+                return self._autorun.status()
+
+            # 지연 임포트: lerobot/torch 미설치 상태에서도 서버 자체는 기동돼야 한다.
+            from .lerobot_bridge import ActInferenceRunner, LeRobotUnavailableError
+
+            ckpt_path = checkpoint or str(self._default_checkpoint_dir())
+            try:
+                runner = ActInferenceRunner(ckpt_path)
+            except LeRobotUnavailableError as exc:
+                raise ValidationError(str(exc)) from exc
+
+            self.follower.connect()
+            self.follower.set_torque(True)
+            self._autorun = AutoRunLoop(runner, self.follower, self.cameras, self.cfg.safety, rate_hz=rate_hz)
+            self._autorun.start()
+            logger.info("autorun 시작: checkpoint=%s", ckpt_path)
+            return self._autorun.status()
+
+    def stop_autorun(self) -> dict:
+        with self._lock:
+            if self._autorun:
+                self._autorun.stop()
+                self._autorun.join(timeout=5.0)
+                status = self._autorun.status()
+                self._autorun = None
+                return status
+            return {"running": False, "fault": None, "tick_count": 0}
+
+    @property
+    def autorun_status(self) -> dict:
+        if self._autorun:
+            return self._autorun.status()
+        return {"running": False, "fault": None, "tick_count": 0}
+
+    def _default_checkpoint_dir(self):
+        """checkpoint 인자를 안 주면 가장 최근에 학습된 체크포인트를 쓴다."""
+        if not self._checkpoint_root.exists():
+            raise ValidationError(
+                f"체크포인트가 없습니다 ({self._checkpoint_root}). "
+                "checkpoint 경로를 직접 지정하거나 먼저 학습을 완료하세요."
+            )
+        candidates = sorted(self._checkpoint_root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            raise ValidationError(f"{self._checkpoint_root} 안에 체크포인트 폴더가 없습니다.")
+        return candidates[0]
 
 
 class _LazyDynamixelBackend:
