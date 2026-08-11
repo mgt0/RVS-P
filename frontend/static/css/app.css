@@ -644,7 +644,23 @@ select.input {
 }
 select.input option { background: var(--canvas-card); color: var(--body); }
 
+/* ---------- 에피소드 관리 행 ---------- */
+.ep-row {
+  display: grid;
+  grid-template-columns: 88px minmax(120px, 1fr) 110px 140px 120px auto;
+  gap: var(--s-2);
+  align-items: center;
+  padding: var(--s-2) 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.ep-row:last-child { border-bottom: none; }
+.ep-row--head { padding-bottom: var(--s-3); }
+.ep-row--head + .ep-row { padding-top: var(--s-3); }
+
 @media (max-width: 720px) {
   .viewer__canvas { height: 340px; }
   .confusion { grid-template-columns: 64px 1fr 1fr; }
+  /* 좁은 화면에서는 2열로 접는다. 헤더 행은 의미가 없어지므로 감춘다. */
+  .ep-row { grid-template-columns: 1fr 1fr; }
+  .ep-row--head { display: none; }
 }

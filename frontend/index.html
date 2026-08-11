@@ -104,6 +104,19 @@
           <button class="btn" @click="goHome" :disabled="busy.home || recording">
             {{ busy.home ? 'HOMING…' : 'HOME POSITION' }}
           </button>
+          <button class="btn btn--primary" @click="startConveyor" :disabled="busy.conveyor">컨베이어 시작</button>
+          <button class="btn" @click="stopConveyor" :disabled="busy.conveyor">정지</button>
+          <input
+            class="input" type="number" min="0.5" max="112" step="0.5" style="width:96px"
+            v-model.number="conveyorRpm" @change="setConveyorSpeed"
+            :disabled="busy.conveyor" aria-label="컨베이어 목표 속도 (모터축 RPM)">
+          <button class="btn" @click="toggleConveyorDir" :disabled="busy.conveyor">
+            {{ conveyor.dir === 'ccw' ? '◀ 역방향' : '정방향 ▶' }}
+          </button>
+          <button
+            class="btn" @click="releaseConveyor" :disabled="busy.conveyor"
+            title="펌웨어를 다시 업로드하려면 COM 포트를 놓아야 합니다">포트 해제</button>
+          <span class="mono mono--xs">{{ conveyorLabel }}</span>
         </div>
       </div>
 
@@ -221,7 +234,7 @@
           </div>
           <div class="summary__item">
             <span class="mono mono--xs">EPISODES</span>
-            <span class="summary__value">{{ status.recording.total_episodes }}</span>
+            <span class="summary__value">{{ episodes.length }}</span>
           </div>
           <div class="summary__item">
             <span class="mono mono--xs">FRAMES</span>
@@ -240,14 +253,77 @@
           <div class="summary__item">
             <span class="mono mono--xs">GOOD / DEFECT</span>
             <span class="summary__value">
-              {{ status.recording.good_objects }} / {{ status.recording.defect_objects }}
+              {{ objectCounts.good }} / {{ objectCounts.defect }}
             </span>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ══════════════ 5. TRAINING METRICS ══════════════ -->
+    <!-- ══════════════ 5. EPISODES ══════════════ -->
+    <section class="section">
+      <div class="section__head">
+        <div>
+          <div class="eyebrow">EPISODES</div>
+          <h2 class="title" style="margin-top:8px">수집된 에피소드</h2>
+        </div>
+        <div class="btn-row">
+          <span class="mono mono--xs">{{ episodes.length }} EPISODES</span>
+          <button class="btn" @click="refreshEpisodes" :disabled="busy.episodes">
+            {{ busy.episodes ? 'LOADING…' : 'REFRESH' }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="!episodes.length" class="card">
+        <div class="mono mono--sm" style="text-align:center; padding:24px 0">
+          아직 저장된 에피소드가 없습니다
+        </div>
+      </div>
+
+      <div v-else class="card">
+        <div class="ep-row ep-row--head">
+          <span class="mono mono--xs">EPISODE</span>
+          <span class="mono mono--xs">OBJECT ID</span>
+          <span class="mono mono--xs">LABEL</span>
+          <span class="mono mono--xs">DEFECT TYPE</span>
+          <span class="mono mono--xs">FRAMES</span>
+          <span></span>
+        </div>
+
+        <div v-for="ep in episodes" :key="ep.episode_id" class="ep-row">
+          <span class="mono mono--sm mono--ink">{{ ep.episode_id }}</span>
+
+          <input class="input" v-model="ep.object_id" :disabled="busy.episodes"
+                 :aria-label="ep.episode_id + ' 물체 ID'" autocomplete="off">
+
+          <select class="input" v-model="ep.label" :disabled="busy.episodes"
+                  :aria-label="ep.episode_id + ' 품질 라벨'">
+            <option value="good">GOOD</option>
+            <option value="defect">DEFECT</option>
+          </select>
+
+          <!-- GOOD 으로 되돌리면 서버가 defect_type 을 지운다(라벨 오염 방지) -->
+          <select class="input" v-model="ep.defect_type"
+                  :disabled="busy.episodes || ep.label !== 'defect'"
+                  :aria-label="ep.episode_id + ' 불량 유형'">
+            <option :value="null">—</option>
+            <option v-for="t in meta.defect_types" :key="t" :value="t">{{ t }}</option>
+          </select>
+
+          <span class="mono mono--xs">
+            {{ ep.num_frames }}F · {{ (ep.duration_sec || 0).toFixed(1) }}S
+          </span>
+
+          <div class="btn-row">
+            <button class="btn" @click="saveEpisode(ep)" :disabled="busy.episodes">SAVE</button>
+            <button class="btn btn--sunset" @click="deleteEpisode(ep)" :disabled="busy.episodes">DELETE</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════ 6. TRAINING METRICS ══════════════ -->
     <section class="section">
       <div class="section__head">
         <div>
@@ -371,7 +447,7 @@
       </template>
     </section>
 
-    <!-- ══════════════ 6. 3D SCAN INSPECTION ══════════════ -->
+    <!-- ══════════════ 7. 3D SCAN INSPECTION ══════════════ -->
     <section class="section">
       <div class="section__head">
         <div>
@@ -392,34 +468,70 @@
           <button class="btn btn--sunset" @click="reconstruct" :disabled="!scan.selectedKey || busy.recon">
             {{ busy.recon ? 'RECONSTRUCTING…' : 'RECONSTRUCT 3D' }}
           </button>
+          <!-- 파일 선택창은 숨기고 버튼으로 연다. 기본 input 은 스타일이 안 맞는다. -->
+          <input ref="modelInput" type="file" accept=".stl" style="display:none"
+                 @change="uploadModel">
+          <button class="btn" @click="pickModelFile" :disabled="busy.recon"
+                  title="선택한 물체의 양품 기준이 될 STL 파일을 등록합니다. STEP/STP 는 CAD 에서 STL 로 내보내 주세요.">
+            기준 모델 등록
+          </button>
+          <button class="btn" @click="captureBackground" :disabled="busy.recon"
+                  title="물체를 치운 상태에서 한 번 눌러 빈 배경을 저장합니다. 배경이 복잡해도 물체만 분리됩니다.">
+            배경 캡처
+          </button>
           <button class="btn" @click="reconstructDemo" :disabled="busy.recon">DEMO</button>
           <button class="btn" @click="resetView" :disabled="!scan.hasMesh">RESET VIEW</button>
         </div>
       </div>
 
-      <!-- CNN 판정 결과 스트립 -->
+      <!-- 결과 스트립. CAD 기준 모델과 스캔 재구성은 의미 있는 지표가 다르다.
+           모든 참조에 ?. 를 쓴다 — 한 곳만 빠져도 렌더가 통째로 죽어 화면이 검게 된다. -->
       <div v-if="scan.hasMesh" class="grid grid--form" style="margin-bottom:12px">
-        <div class="card kpi">
-          <span class="mono mono--xs">CNN 판정</span>
-          <span class="kpi__value" :class="{ 'mono--sunset': scan.stats.classification.label === 'defect' }">
-            {{ (scan.stats.classification.label || 'UNKNOWN').toUpperCase() }}
-          </span>
-          <span class="mono mono--xs">신뢰도 {{ fmtPct(scan.stats.classification.confidence || 0) }}</span>
-        </div>
+        <template v-if="isCadModel">
+          <div class="card kpi">
+            <span class="mono mono--xs">기준 모델</span>
+            <span class="kpi__value">CAD</span>
+            <span class="mono mono--xs">{{ scan.stats.file }}</span>
+          </div>
+          <div class="card kpi">
+            <span class="mono mono--xs">실제 치수 (MM)</span>
+            <span class="kpi__value" style="font-size:24px">
+              {{ (scan.stats.size_mm || []).map((v) => v.toFixed(1)).join(' × ') }}
+            </span>
+            <span class="mono mono--xs">STL 단위를 mm 로 가정</span>
+          </div>
+        </template>
+        <template v-else>
+          <div class="card kpi">
+            <span class="mono mono--xs">CNN 판정</span>
+            <span class="kpi__value" :class="{ 'mono--sunset': scan.stats.classification?.label === 'defect' }">
+              {{ (scan.stats.classification?.label || 'UNKNOWN').toUpperCase() }}
+            </span>
+            <span class="mono mono--xs">신뢰도 {{ fmtPct(scan.stats.classification?.confidence || 0) }}</span>
+          </div>
+          <div class="card kpi">
+            <span class="mono mono--xs">복셀 점유율</span>
+            <span class="kpi__value">{{ fmtPct(scan.stats.voxel_occupancy || 0) }}</span>
+            <span class="mono mono--xs">{{ scan.stats.num_views }}뷰 · 각도 일치도 {{ scan.stats.view_dir_consistency }}</span>
+          </div>
+        </template>
+
         <div class="card kpi">
           <span class="mono mono--xs">불량 영역</span>
-          <span class="kpi__value">{{ scan.stats.num_defect_regions }}</span>
-          <span class="mono mono--xs">하이라이트 표시됨</span>
+          <span class="kpi__value" :class="{ 'mono--sunset': (scan.stats.flagged_ratio || 0) > 0 }">
+            {{ scan.stats.comparison_skipped ? '판단 불가'
+               : (scan.stats.flagged_ratio !== undefined
+                  ? fmtPct(scan.stats.flagged_ratio) : (scan.stats.num_defect_regions || 0)) }}
+          </span>
+          <span class="mono mono--xs">
+            {{ scan.stats.alignment_score !== undefined
+               ? '정합 일치도 ' + scan.stats.alignment_score : '하이라이트 표시됨' }}
+          </span>
         </div>
         <div class="card kpi">
           <span class="mono mono--xs">MESH</span>
           <span class="kpi__value">{{ scan.stats.num_vertices }}</span>
           <span class="mono mono--xs">{{ scan.stats.num_faces }} FACES</span>
-        </div>
-        <div class="card kpi">
-          <span class="mono mono--xs">복셀 점유율</span>
-          <span class="kpi__value">{{ fmtPct(scan.stats.voxel_occupancy) }}</span>
-          <span class="mono mono--xs">{{ scan.stats.num_views }}뷰 재구성</span>
         </div>
       </div>
 
@@ -433,11 +545,11 @@
         <div ref="viewerCanvas" class="viewer__canvas"></div>
         <div class="viewer__hud">
           <div class="mono mono--xs">
-            <span class="dot" :class="scan.stats.classification && scan.stats.classification.label === 'defect' ? '' : 'dot--on'"
+            <span class="dot" :class="scan.stats.classification?.label === 'defect' ? '' : 'dot--on'"
                   style="display:inline-block; margin-right:6px"></span>
             {{ scan.currentObject }} · VISUAL HULL
           </div>
-          <div class="mono mono--xs mono--sunset" v-if="scan.stats.num_defect_regions > 0">
+          <div class="mono mono--xs mono--sunset" v-if="(scan.stats.num_defect_regions || 0) > 0">
             ● 오렌지 영역 = 불량 부위
           </div>
           <div class="mono mono--xs">DRAG 회전 · SCROLL 확대</div>

@@ -23,7 +23,7 @@ import time
 from typing import Protocol, Sequence
 
 from ..config import ArmConfig, SafetyConfig
-from ..utils.errors import ArmConnectionError, SafetyLimitError
+from ..utils.errors import ArmConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 ADDR_TORQUE_ENABLE = 64
 ADDR_GOAL_POSITION = 116
 ADDR_PRESENT_POSITION = 132
-LEN_GOAL_POSITION = 4
 DXL_RESOLUTION = 4096          # 1회전 = 4096 tick
 DXL_CENTER = 2048
 
@@ -184,12 +183,13 @@ class SafetyGuard:
     """관절 명령 클램프. 순수 함수에 가까워 단위 테스트가 쉽다."""
 
     def __init__(self, safety: SafetyConfig) -> None:
-        self._safety = safety
+        # public: ArmController.go_home 이 homing_speed 를 읽는다.
+        self.safety = safety
 
     def clamp(self, target: Sequence[float], current: Sequence[float]) -> tuple[list[float], bool]:
         """(클램프된 목표값, 클램프가 실제로 발생했는지) 반환."""
-        limits = self._safety.joint_limits
-        max_delta = self._safety.max_relative_target
+        limits = self.safety.joint_limits
+        max_delta = self.safety.max_relative_target
         clamped: list[float] = []
         touched = False
 
@@ -209,14 +209,6 @@ class SafetyGuard:
             clamped.append(bounded)
 
         return clamped, touched
-
-    def assert_within_limits(self, positions: Sequence[float]) -> None:
-        for i, pos in enumerate(positions):
-            lo, hi = self._safety.joint_limits[i] if i < len(self._safety.joint_limits) else (-180.0, 180.0)
-            if not (lo <= pos <= hi):
-                raise SafetyLimitError(
-                    f"관절 {i} 가 소프트리밋을 벗어났습니다: {pos:.1f}° (허용 {lo}~{hi}°)"
-                )
 
 
 class ArmController:
@@ -296,7 +288,7 @@ class ArmController:
             self.set_torque(True)
             home = list(self.cfg.home_position)
             step_hz = 50.0
-            step_deg = self._guard._safety.homing_speed_deg_per_s / step_hz
+            step_deg = self._guard.safety.homing_speed_deg_per_s / step_hz
 
             for _ in range(int(step_hz * 20)):  # 최대 20초 안전장치
                 current = self._last_positions
