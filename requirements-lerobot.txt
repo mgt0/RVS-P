@@ -16,5 +16,15 @@
 #  - 시리얼 포트 관련 오류가 나면(huggingface/lerobot#1094) COM 포트 표기를
 #    확인하세요. omx-factory-system 자체 텔레옵이 이미 같은 포트로 동작
 #    중이라면 그 값 그대로 쓰면 됩니다.
+#
+# 이 파일만 설치해서는 안 끝난다 — 아래 5가지를 실제로 순서대로 겪었다.
+# README.md의 "Windows에서 실제로 겪은 문제 4가지" 섹션(사실상 5가지)에
+# 증상·원인·해결을 전부 적어뒀으니 에러 나면 거기부터 볼 것:
+#   1) torch DLL 초기화 실패(WinError 1114, c10.dll)
+#   2) lerobot[dataset]/lerobot[training] extras 누락
+#   3) lerobot-train 실행 시 --policy.repo_id 필수
+#   4) 리더/팔로워 관절 수 불일치로 rollout 추론 실패
+#   5) PolicyProcessorPipeline.from_pretrained() 직접 호출 시 postprocessor 깨짐
+#      (make_pre_post_processors()로 불러올 것)
 
 lerobot[dataset,training]>=0.5.0
