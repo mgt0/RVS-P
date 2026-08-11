@@ -149,40 +149,23 @@ class DemoTrainer:
 
 
 class LeRobotTrainer:
-    """실제 lerobot ACT 학습 어댑터.
+    """실제 ACT 학습은 이 대시보드가 아니라 lerobot 의 CLI 가 담당한다.
 
-    lerobot 의 학습 API 는 버전에 따라 시그니처가 자주 바뀐다. 그래서 여기서는
-    '어떻게 연결하는지'의 골격만 제공하고, 콜백에서 우리 MetricHistory 로
-    값을 흘려보내는 지점을 명확히 표시해 둔다. 실제 환경의 lerobot 버전에
-    맞춰 train_step 내부만 교체하면 된다.
+    학습은 GPU 를 몇 시간 점유하므로, 카메라 5대와 시리얼 포트를 붙잡고 있는
+    이 서버 프로세스 안에서 돌릴 일이 아니다. 별도 프로세스로 띄우면 서버를
+    재시작해도 학습이 살아남고, 로그·체크포인트 관리도 lerobot 이 이미 한다.
+    여기서는 다음에 실행할 두 줄을 알려주는 역할만 한다.
     """
 
     def run(self, ctrl: TrainingController) -> None:
-        try:
-            import torch  # noqa: F401
-        except ImportError:
-            ctrl.set_state(
-                "FAILED",
-                "torch/lerobot 가 설치되어 있지 않습니다. `pip install lerobot` 후 "
-                "다시 시도하거나 데모 모드로 실행하세요.",
-            )
-            return
-
-        ctrl.set_state("FAILED", "LeRobotTrainer 는 실제 환경의 lerobot 버전에 맞춰 "
-                                 "train_step 구현이 필요합니다. 현재는 데모 모드를 사용하세요.")
-        # ── 실제 연동 지점 (의사 코드) ─────────────────────────────
-        # policy = ACTPolicy(cfg)
-        # for epoch in range(epochs):
-        #     if ctrl.should_stop: break
-        #     for batch in train_loader:
-        #         pred = policy(batch.images, batch.state)
-        #         loss = l1(pred, batch.action)
-        #         loss.backward(); optimizer.step()
-        #     # 검증
-        #     val = compute_metrics(val_pred_deg, val_target_deg, threshold_deg=τ)
-        #     ctrl.history.append(EpochRecord(epoch=epoch, ...))
-        # ctrl.set_state("DONE")
-        # ───────────────────────────────────────────────────────────
+        repo_id = ctrl.params.get("repo_id", "omx/scan")
+        ctrl.set_state(
+            "FAILED",
+            "실제 ACT 학습은 별도 프로세스에서 실행합니다:\n"
+            f"  1) python scripts/to_lerobot.py --repo-id {repo_id}\n"
+            f"  2) lerobot-train --dataset.repo_id={repo_id} --policy.type=act\n"
+            "이 화면의 실시간 차트는 DEMO 모드로 확인하세요.",
+        )
 
 
 class TrainingManager:

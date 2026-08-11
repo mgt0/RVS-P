@@ -10,6 +10,16 @@ pyarrow==17.0.0
 # --- 3D 재구성 (marching cubes; 없으면 복셀 큐브 폴백) ---
 scikit-image==0.24.0
 
+# --- 불량 분류 CNN (ResNet18 + LoRA). CPU 버전으로 충분하며, GPU 가 있으면
+# --- https://pytorch.org 의 CUDA 휠로 바꿔 설치하세요.
+torch
+torchvision
+
+# --- 카메라 이름 매칭 (Windows) ---
+# 정수 인덱스는 USB 를 다시 꽂으면 밀리므로 config 는 장치 이름으로 지목합니다.
+# 없으면 이름 매칭만 비활성화되고 서버는 인덱스 방식으로 계속 동작합니다.
+pygrabber==0.2
+
 # --- 하드웨어 (실기 배포 시에만 필요) ---
 # 미설치 상태에서도 서버는 기동되며, 실제 arm 연결 시점에만 에러가 납니다.
 dynamixel-sdk==3.7.31

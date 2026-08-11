@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import time
 
-from flask import Blueprint, Response, current_app, jsonify, request
+from flask import Blueprint, Response, current_app, request
 
-from ..utils.errors import CameraUnavailableError
+from ..utils.errors import CameraUnavailableError, ValidationError
 
 bp = Blueprint("stream", __name__, url_prefix="/api")
 
@@ -29,17 +29,21 @@ def _hub():
     return current_app.extensions["omx_hub"]
 
 
-@bp.get("/cameras")
-def list_cameras():
-    return jsonify({"ok": True, "cameras": _hub().cameras.status_all()})
+def _clamped_arg(name: str, default: int, lo: int, hi: int) -> int:
+    """쿼리 파라미터는 신뢰 경계다. 숫자가 아니면 500(내부 오류)이 아니라 400."""
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        raise ValidationError(f"{name} 는 정수여야 합니다: {request.args.get(name)!r}") from None
+    return min(max(value, lo), hi)
 
 
 @bp.get("/stream/<name>")
 def stream(name: str):
     hub = _hub()
     worker = hub.cameras.worker(name)          # 없는 이름이면 여기서 404
-    max_fps = min(max(int(request.args.get("fps", 15)), 1), 30)
-    quality = min(max(int(request.args.get("q", 75)), 30), 95)
+    max_fps = _clamped_arg("fps", 15, 1, 30)
+    quality = _clamped_arg("q", 75, 30, 95)
 
     def generate():
         last_index = -1

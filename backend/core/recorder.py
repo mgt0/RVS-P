@@ -21,8 +21,8 @@ import time
 from enum import Enum
 from pathlib import Path
 
-from ..config import DEFECT_TYPES, RecordingConfig
-from ..utils.errors import RecordingStateError, ValidationError
+from ..config import RecordingConfig
+from ..utils.errors import RecordingStateError
 from .arm_controller import ArmController
 from .camera_manager import CameraManager
 from .storage import (
@@ -33,6 +33,7 @@ from .storage import (
     EpisodeWriter,
     Sample,
     validate_id,
+    validate_label,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,22 +100,11 @@ class Recorder:
                 "skew_violations": self._skew_violations,
                 "queue_depth": self._queue.qsize(),
                 "last_error": self._last_error,
-                **self.index.summary(),
             }
 
     # ------------------------------------------------------------------ 제어
     def start(self, episode_id: str, object_id: str, label: str, defect_type: str | None) -> dict:
-        label = (label or "").lower()
-        if label not in {"good", "defect"}:
-            raise ValidationError("label 은 'good' 또는 'defect' 여야 합니다.")
-        if label == "defect":
-            if defect_type not in DEFECT_TYPES:
-                raise ValidationError(
-                    f"defect_type 은 {', '.join(DEFECT_TYPES)} 중 하나여야 합니다."
-                )
-        else:
-            defect_type = None  # GOOD 인데 defect_type 이 남아있으면 라벨 오염
-
+        label, defect_type = validate_label(label, defect_type)
         episode_id = validate_id(episode_id, "episode_id")
         object_id = validate_id(object_id, "object_id")
 
@@ -144,11 +134,7 @@ class Recorder:
 
             writers: list[DatasetWriter] = [
                 EpisodeWriter(self._cfg.root, jpeg_quality=self._cfg.jpeg_quality),
-                ClassificationWriter(
-                    self._cfg.root,
-                    capture_at=self._cfg.classification_capture_at,
-                    jpeg_quality=95,
-                ),
+                ClassificationWriter(self._cfg.root, jpeg_quality=95),
             ]
             for writer in writers:
                 writer.open(meta)   # 실패 시(중복 ID 등) 여기서 예외 → 상태는 IDLE 유지

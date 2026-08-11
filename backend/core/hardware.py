@@ -21,6 +21,7 @@ from .arm_controller import (
 )
 from .act_trainer import TrainingManager
 from .camera_manager import CameraManager
+from .conveyor import ConveyorController
 from .port_finder import IdentifySession, PortRegistry
 from .recorder import Recorder
 
@@ -40,6 +41,7 @@ class HardwareHub:
 
         self.recorder = Recorder(cfg.recording, self.cameras, self.leader, self.follower)
         self.training = TrainingManager(cfg.recording.root)
+        self.conveyor = ConveyorController(cfg.conveyor, simulate=cfg.server.simulate)
         self._teleop: TeleopLoop | None = None
         self._lock = threading.RLock()
 
@@ -79,6 +81,7 @@ class HardwareHub:
                     except Exception:  # noqa: BLE001
                         logger.exception("%s arm 종료 중 오류", arm.role)
                 self.cameras.stop()
+                self.conveyor.disconnect()
         logger.info("하드웨어 정리 완료")
 
     # ---------------------------------------------------------------- 텔레오퍼

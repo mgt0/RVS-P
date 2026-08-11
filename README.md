@@ -29,6 +29,11 @@ OMX_SIMULATE=0 python run.py
 ./scripts/serve.sh
 ```
 
+> **Windows**: 위 명령들은 Linux 기준입니다. 가상환경은 `.venv\Scripts\activate`,
+> 환경변수는 `$env:OMX_SIMULATE="0"` 로 씁니다. `serve.sh` 의 gunicorn 은
+> Windows 에서 동작하지 않으므로 `python run.py` 를 그대로 쓰세요.
+> 포트 이름도 `/dev/ttyACM*` 대신 `COM*` 입니다(식별 전략은 동일).
+
 ---
 
 ## 왜 이렇게 만들었는가
@@ -136,6 +141,9 @@ lerobot_data/
 | GET | `/api/stream/<name>?fps=&q=` | MJPEG 스트림 |
 | GET | `/api/snapshot/<name>` | 단일 JPEG |
 | POST | `/api/recording/{start,stop}` | 수집 제어 |
+| GET | `/api/episodes` | 저장된 에피소드 목록 (metadata.json) |
+| PATCH | `/api/episodes/<id>` | 라벨·물체 ID 수정 (분류 폴더도 함께 이동) |
+| DELETE | `/api/episodes/<id>` | 에피소드 삭제 (녹화 중이면 거부) |
 | POST | `/api/teleop/{start,stop}` | 텔레오퍼레이션 |
 | POST | `/api/arm/home` | 홈 복귀 (녹화 중 거부) |
 | POST | `/api/train/{start,stop}` | ACT 학습 제어 (demo/lerobot 모드) |
@@ -151,6 +159,33 @@ lerobot_data/
 { "ok": false, "error": { "code": "arm_port_not_found",
   "message": "LEADER arm 포트를 찾지 못했습니다…", "detail": { "role": "leader" } } }
 ```
+
+---
+
+## 실제 ACT 학습 — LeRobot 변환
+
+이 저장소의 폴더 구조는 사람이 읽기 위한 것이라 LeRobot 표준 데이터셋이 아닙니다.
+학습 전에 한 번 변환합니다.
+
+```bash
+python scripts/to_lerobot.py --repo-id omx/scan
+lerobot-train --dataset.repo_id=omx/scan --policy.type=act
+```
+
+변환의 핵심은 관측/행동 대응입니다.
+
+| LeRobot 필드 | 우리 컬럼 | 의미 |
+|---|---|---|
+| `observation.state` | `follower_joint_*` | 지금 로봇이 있는 자세 |
+| `action` | `leader_joint_*` | 사람이 시킨 자세 |
+| `observation.images.<cam>` | `camera_<cam>/frame_*.jpg` | 같은 타임스텝의 프레임 |
+
+둘이 뒤바뀌면 정책은 "현재 자세 → 현재 자세"를 배우고, 손실은 예쁘게 떨어지지만
+로봇은 아무것도 하지 않습니다. `tests/test_episodes.py` 가 이 대응을 고정합니다.
+
+meta/*.jsonl·청킹·stats 집계는 직접 쓰지 않고 `LeRobotDataset.create/add_frame/
+save_episode` 에 맡깁니다. 어차피 학습에 lerobot 이 필요하고, 손으로 쓴 포맷은
+lerobot 버전이 오르면 조용히 어긋납니다.
 
 ---
 
