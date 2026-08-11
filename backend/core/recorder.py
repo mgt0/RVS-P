@@ -19,7 +19,6 @@ import queue
 import threading
 import time
 from enum import Enum
-from pathlib import Path
 
 from ..config import RecordingConfig
 from ..utils.errors import RecordingStateError

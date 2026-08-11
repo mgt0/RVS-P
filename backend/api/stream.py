@@ -16,17 +16,14 @@ from __future__ import annotations
 
 import time
 
-from flask import Blueprint, Response, current_app, request
+from flask import Blueprint, Response, request
 
 from ..utils.errors import CameraUnavailableError, ValidationError
+from . import current_hub
 
 bp = Blueprint("stream", __name__, url_prefix="/api")
 
 BOUNDARY = "omxframe"
-
-
-def _hub():
-    return current_app.extensions["omx_hub"]
 
 
 def _clamped_arg(name: str, default: int, lo: int, hi: int) -> int:
@@ -40,7 +37,7 @@ def _clamped_arg(name: str, default: int, lo: int, hi: int) -> int:
 
 @bp.get("/stream/<name>")
 def stream(name: str):
-    hub = _hub()
+    hub = current_hub()
     worker = hub.cameras.worker(name)          # 없는 이름이면 여기서 404
     max_fps = _clamped_arg("fps", 15, 1, 30)
     quality = _clamped_arg("q", 75, 30, 95)
@@ -80,7 +77,7 @@ def stream(name: str):
 @bp.get("/snapshot/<name>")
 def snapshot(name: str):
     """단일 JPEG. 스트림 연결 수를 아끼고 싶을 때 폴링용으로 쓸 수 있다."""
-    hub = _hub()
+    hub = current_hub()
     worker = hub.cameras.worker(name)
     frame = worker.latest()
     if frame is None:
