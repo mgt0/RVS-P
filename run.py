@@ -6,6 +6,18 @@ threaded=True 로 띄우되, 실제 데모/수집에는 scripts/serve.sh 의
 gunicorn+gevent 구성을 사용하세요.
 """
 
+# Windows 한정: 이 서버는 기동 시 cv2/pandas(카메라·저장 모듈)를 먼저 로드하는데,
+# rollout 사용 시점에 lerobot_bridge.py가 나중에 torch를 import하면 서로 다른
+# 버전의 동명 런타임 DLL(OpenMP 계열)을 cv2/pandas가 먼저 점유해버려서 torch DLL
+# 초기화가 WinError 1114로 깨진다(scripts/to_lerobot.py 상단 주석과 동일 원인).
+# 프로세스 시작 시점에 아무것도 안 하고 먼저 import만 해두면 슬롯을 선점해 이후
+# cv2/pandas/lerobot 전부 정상 동작한다. torch 미설치 환경(=rollout 안 쓰는 경우)
+# 에서는 조용히 넘어간다.
+try:
+    import torch  # noqa: F401
+except ImportError:
+    pass
+
 import socket
 import sys
 

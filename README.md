@@ -244,6 +244,45 @@ GET  /api/rollout/status
 - `frames`로 넘기는 카메라 이름은 `CAMERA_ORDER`(`cam1`~`cam5`)와 일치해야
   한다 — 학습 때 못 본 카메라 이름을 주면 정책이 조용히 무시하거나 에러를 낸다.
 
+### Windows에서 실제로 겪은 문제 4가지 (전부 재현·해결함)
+
+teleop → 녹화 → `to_lerobot.py` 변환 → `lerobot-train` → rollout까지 이 저장소를
+Windows에서 실물 하드웨어로 끝까지 돌려서 검증하는 과정에서 아래 4가지를 실제로
+만났다. lerobot/torch 버전이 바뀌면 다시 겪을 수 있으니 진단 순서를 남겨둔다.
+
+1. **torch DLL 초기화 실패** (`WinError 1114`, `c10.dll` 로드 실패)
+   cv2/pandas가 torch보다 먼저 로드되면 동명의 런타임 DLL(OpenMP 계열)을 먼저
+   점유해 torch 쪽 DLL 초기화가 깨진다. `run.py`와 `scripts/to_lerobot.py` 맨
+   위에 아무 것도 안 하는 `import torch`(실패해도 무시)를 넣어 슬롯을 선점하게
+   해뒀다 — 새 진입점(스크립트)을 추가한다면 같은 패턴을 넣을 것.
+   - 증상이 이거면서 `import torch` 단독으로는 되는데 스크립트에서만 깨진다면
+     100% 이 문제다. `python -c "import cv2,pandas; import torch"` 로 재현 확인.
+2. **lerobot extras 누락**: `pip install lerobot` 만으로는 `lerobot.datasets`
+   (`pip install 'lerobot[dataset]'` 필요, 내부적으로 HuggingFace `datasets`
+   패키지를 씀)와 `lerobot-train`(`pip install 'lerobot[training]'`, `accelerate`
+   필요)이 둘 다 빠진다. `requirements-lerobot.txt`는 `lerobot[dataset,training]`
+   으로 이미 반영해뒀다.
+3. **`--policy.repo_id` 누락 시 `lerobot-train`이 즉시 에러** (`ValueError:
+   'repo_id' argument missing`). 허브에 올릴 생각이 없어도 이 인자는 필수다.
+   `--policy.push_to_hub=false`와 같이 주면 로컬에만 저장된다.
+4. **관절 수 불일치로 rollout 추론이 즉시 실패** (`tensor a(6) must match
+   tensor b(5)`). 리더/팔로워가 물리적으로 관절 수가 같아도 `config.yaml`의
+   `arms.*.joint_ids` 개수가 다르면(우리 경우 리더만 5개, 팔로워는 그리퍼 포함
+   6개 읽음) `to_lerobot.py`가 만든 데이터셋의 `observation.state` 차원과 실제
+   `follower.read()` 길이가 어긋난다. `ActInferenceRunner`가 체크포인트의
+   `config.json`에서 `input_features["observation.state"]["shape"]`를 직접 읽어
+   자동으로 맞춰 자르지만, 애초에 픽업(그리퍼 조작)까지 학습시키려면
+   `arms.leader.joint_ids`에 그리퍼 축도 포함시켜 재수집해야 한다 — 지금
+   설정으로는 팔 위치만 배우고 그리퍼 개폐는 데이터에 아예 없다.
+5. **`PolicyProcessorPipeline.from_pretrained()`를 직접 호출하면 postprocessor가
+   깨진다** (`EnvTransition must be a dictionary. Got Tensor`). 이 클래스의
+   `to_transition` 기본값이 딕셔너리 전용(`batch_to_transition`)으로 고정돼
+   있어서, 액션(텐서)을 받아야 하는 후처리기에도 그게 적용된다. 반드시
+   `lerobot.policies.make_pre_post_processors(policy_cfg=policy.config,
+   pretrained_path=checkpoint_path)`(공식 `lerobot_eval.py`가 쓰는 것과 동일)로
+   불러올 것 — 이 함수가 후처리기에는 `to_transition=policy_action_to_transition`
+   을 명시적으로 넣어준다.
+
 ---
 
 ## 3D 스캔 검사
