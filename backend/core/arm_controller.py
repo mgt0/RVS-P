@@ -23,7 +23,7 @@ import time
 from typing import Protocol, Sequence
 
 from ..config import ArmConfig, SafetyConfig
-from ..utils.errors import ArmConnectionError, SafetyLimitError
+from ..utils.errors import ArmConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 ADDR_TORQUE_ENABLE = 64
 ADDR_GOAL_POSITION = 116
 ADDR_PRESENT_POSITION = 132
-LEN_GOAL_POSITION = 4
 DXL_RESOLUTION = 4096          # 1회전 = 4096 tick
 DXL_CENTER = 2048
 
@@ -210,14 +209,6 @@ class SafetyGuard:
             clamped.append(bounded)
 
         return clamped, touched
-
-    def assert_within_limits(self, positions: Sequence[float]) -> None:
-        for i, pos in enumerate(positions):
-            lo, hi = self.safety.joint_limits[i] if i < len(self.safety.joint_limits) else (-180.0, 180.0)
-            if not (lo <= pos <= hi):
-                raise SafetyLimitError(
-                    f"관절 {i} 가 소프트리밋을 벗어났습니다: {pos:.1f}° (허용 {lo}~{hi}°)"
-                )
 
 
 class ArmController:

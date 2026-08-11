@@ -136,10 +136,6 @@ class EpisodeWriter:
         self._rows: list[dict] = []
         self._frame_index = 0
 
-    @property
-    def directory(self) -> Path | None:
-        return self._dir
-
     def open(self, meta: EpisodeMeta) -> None:
         target = self._root / "episodes" / f"episode_{meta.episode_id}"
         # exist_ok=False: 같은 ID 로 덮어써서 기존 에피소드를 조용히 날리는 사고를 막는다.

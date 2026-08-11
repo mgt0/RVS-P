@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, jsonify, request
 
 from ..core.port_finder import scan_serial_ports
 from ..utils.errors import ArmConnectionError, ArmPortNotFoundError, ValidationError
+from . import current_hub
 
 bp = Blueprint("ports", __name__, url_prefix="/api/ports")
-
-
-def _hub():
-    return current_app.extensions["omx_hub"]
 
 
 def _arm_status(hub, role: str) -> dict:
@@ -40,7 +37,7 @@ def list_ports():
     카메라 상태까지 같이 내려주는 이유: 프론트에서 2번 폴링하면 두 응답 사이에
     상태가 갈려 '연결된 포트 수' 배지가 깜빡인다. 한 스냅샷으로 묶는다.
     """
-    hub = _hub()
+    hub = current_hub()
     arms = [_arm_status(hub, role) for role in ("leader", "follower")]
     cameras = hub.cameras.status_all()
     connected = sum(1 for a in arms if a["connected"]) + sum(1 for c in cameras if c["connected"])
@@ -61,7 +58,7 @@ def list_ports():
 @bp.post("/test")
 def test_connections():
     """실제로 열고 ping 까지 해본다. 목록에 보이는 것과 통신되는 것은 다르다."""
-    hub = _hub()
+    hub = current_hub()
     results = []
 
     for role in ("leader", "follower"):
@@ -95,7 +92,7 @@ def identify_start():
     role = (request.json or {}).get("role")
     if role not in {"leader", "follower"}:
         raise ValidationError("role 은 'leader' 또는 'follower' 여야 합니다.")
-    result = _hub().identify.start(role)
+    result = current_hub().identify.start(role)
     return jsonify({"ok": True, **result})
 
 
@@ -104,12 +101,12 @@ def identify_confirm():
     role = (request.json or {}).get("role")
     if role not in {"leader", "follower"}:
         raise ValidationError("role 은 'leader' 또는 'follower' 여야 합니다.")
-    result = _hub().identify.confirm(role)
+    result = current_hub().identify.confirm(role)
     return jsonify({"ok": True, **result})
 
 
 @bp.post("/refresh")
 def refresh():
     """오버라이드 캐시를 비우고 다시 스캔. 케이블을 바꿔 꽂았을 때 사용."""
-    _hub().ports.clear_overrides()
+    current_hub().ports.clear_overrides()
     return list_ports()

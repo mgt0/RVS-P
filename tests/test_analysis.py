@@ -165,25 +165,25 @@ class TestSilhouette:
         return obj, bg
 
     def test_배경차분은_중앙_물체만_잡는다(self):
-        from backend.core.reconstruct3d import _extract_silhouette
+        from backend.core.reconstruct3d import extract_silhouette
         obj, bg = self._scene()
-        mask = _extract_silhouette(obj, bg)
+        mask = extract_silhouette(obj, bg)
         ys, xs = np.nonzero(mask)
         assert 0.4 < ys.mean() / 240 < 0.6      # 무게중심이 중앙
         assert 0.4 < xs.mean() / 320 < 0.6
         assert 0.02 < (mask > 0).mean() < 0.2   # 물체 크기 수준
 
     def test_배경이_없으면_Otsu_로_폴백한다(self):
-        from backend.core.reconstruct3d import _extract_silhouette
+        from backend.core.reconstruct3d import extract_silhouette
         obj, _ = self._scene()
-        assert _extract_silhouette(obj).shape == obj.shape[:2]
+        assert extract_silhouette(obj).shape == obj.shape[:2]
 
     def test_교집합이_비면_이유를_알려주고_실패한다(self):
         from backend.core.reconstruct3d import reconstruct_from_views
         from backend.utils.errors import EmptyHullError
         # 한 대가 물체를 아예 못 본 상황(가려짐/화면 밖). visual hull 은 AND 라
         # 그 한 뷰 때문에 전부 깎인다. 위치가 다른 것만으로는 비지 않는다 —
-        # 실루엣을 바운딩박스 기준으로 정규화해 맞추기 때문(_normalize_silhouette).
+        # 실루엣을 바운딩박스 기준으로 정규화해 맞추기 때문(normalize_silhouette).
         views = {}
         for i, name in enumerate(("cam1", "cam2", "cam3")):
             img = np.zeros((120, 120, 3), np.uint8)
@@ -265,16 +265,16 @@ class TestSilhouetteNormalization:
         assert r.stats["voxel_occupancy"] > 0
 
     def test_빈_마스크는_빈_정사각형을_돌려준다(self):
-        from backend.core.reconstruct3d import _normalize_silhouette
-        out = _normalize_silhouette(np.zeros((240, 320), np.uint8), 32)
+        from backend.core.reconstruct3d import normalize_silhouette
+        out = normalize_silhouette(np.zeros((240, 320), np.uint8), 32)
         assert out.shape == (32, 32) and out.max() == 0
 
     def test_종횡비를_유지한다(self):
         # 가로로 긴 물체를 정사각으로 늘리면 뷰마다 다르게 찌그러진다
-        from backend.core.reconstruct3d import _normalize_silhouette
+        from backend.core.reconstruct3d import normalize_silhouette
         mask = np.zeros((240, 320), np.uint8)
         mask[100:120, 60:260] = 255          # 200x20 (10:1)
-        out = _normalize_silhouette(mask, 64)
+        out = normalize_silhouette(mask, 64)
         ys, xs = np.nonzero(out)
         assert (xs.max() - xs.min()) > (ys.max() - ys.min()) * 4
 
@@ -310,9 +310,9 @@ class TestArbitraryViewDirections:
 
     def test_시선이_월드up과_나란해도_기저가_만들어진다(self):
         # 하단/상단 뷰는 up 벡터를 그대로 쓸 수 없다(외적이 0).
-        from backend.core.reconstruct3d import _view_basis
+        from backend.core.reconstruct3d import view_basis
         for d in ((0, 1, 0), (0, -1, 0)):
-            right, up = _view_basis(d)
+            right, up = view_basis(d)
             assert np.isfinite(right).all() and np.isfinite(up).all()
             assert abs(float(right @ up)) < 1e-9      # 직교
 
@@ -342,16 +342,16 @@ class TestDebanding:
         return (mask & truth).sum() / (mask | truth).sum()
 
     def test_밴딩이_있어도_실루엣이_유지된다(self):
-        from backend.core.reconstruct3d import _extract_silhouette
+        from backend.core.reconstruct3d import extract_silhouette
         obj, bg, truth = self._scene()
         # 위상이 다른 강한 밴딩 — 디밴딩이 없으면 IoU 가 0.13 까지 떨어진다(실측)
-        mask = _extract_silhouette(self._band(obj, 0.30, 0.0), self._band(bg, 0.30, 1.7)) > 0
+        mask = extract_silhouette(self._band(obj, 0.30, 0.0), self._band(bg, 0.30, 1.7)) > 0
         assert self._iou(mask, truth) > 0.9
 
     def test_밴딩이_없을_때도_품질이_떨어지지_않는다(self):
-        from backend.core.reconstruct3d import _extract_silhouette
+        from backend.core.reconstruct3d import extract_silhouette
         obj, bg, truth = self._scene()
-        mask = _extract_silhouette(obj, bg) > 0
+        mask = extract_silhouette(obj, bg) > 0
         assert self._iou(mask, truth) > 0.9
 
     def test_디밴딩은_가로_밝기변조만_없앤다(self):
@@ -653,12 +653,12 @@ class TestBackgroundFallback:
         return obj, bg
 
     def test_조명이_크게_달라지면_채도_기반으로_전환한다(self):
-        from backend.core.reconstruct3d import _extract_silhouette
+        from backend.core.reconstruct3d import extract_silhouette
         obj, bg = self._scene()
         # 배경 참조만 크게 어둡게(자동 노출이 바뀐 상황). 밝기 매칭으로도 못 메운다.
         stale_bg = np.clip(bg.astype(np.float32) * 0.35, 0, 255).astype(np.uint8)
 
-        mask = _extract_silhouette(obj, stale_bg) > 0
+        mask = extract_silhouette(obj, stale_bg) > 0
         # 화면 전체가 물체가 되면 안 된다
         assert mask.mean() < 0.3
         ys, xs = np.nonzero(mask)
@@ -666,9 +666,9 @@ class TestBackgroundFallback:
         assert 0.3 < xs.mean() / 320 < 0.8
 
     def test_배경이_멀쩡하면_차분_결과를_그대로_쓴다(self):
-        from backend.core.reconstruct3d import _extract_silhouette
+        from backend.core.reconstruct3d import extract_silhouette
         obj, bg = self._scene()
-        mask = _extract_silhouette(obj, bg) > 0
+        mask = extract_silhouette(obj, bg) > 0
         assert 0.02 < mask.mean() < 0.25
 
     def test_채도_마스크는_저채도_배경에서_고채도_물체를_찾는다(self):

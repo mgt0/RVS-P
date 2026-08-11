@@ -35,9 +35,6 @@ from .storage import imread
 
 logger = logging.getLogger(__name__)
 
-# 각 카메라 슬롯이 물체를 바라보는 방향(정규화). space carving 의 투영 축으로 쓴다.
-# 슬롯 이름(cam1~cam5)에는 방향 정보가 없으므로 대응을 여기서 정한다.
-# 카메라를 물리적으로 옮겼다면 config.yaml 의 nth 가 아니라 이 표를 고쳐야 한다.
 # 물체가 있다고 가정하는 화면 중앙 영역의 비율(가로/세로 각각).
 # 0.5 = 가운데 50% 사각형. 리그에서 물체가 화면을 크게 차지하면 키우고,
 # 배경이 자주 잡히면 줄인다.
@@ -66,6 +63,9 @@ TINY_SILHOUETTE = 0.005
 # 0.6 이 무릎이다. 더 매끄럽게 하려면 시그마가 아니라 뷰를 늘려야 한다.
 MESH_SMOOTH_SIGMA = 0.6
 
+# 각 카메라 슬롯이 물체를 바라보는 방향. space carving 의 투영 기준이다.
+# 여기 값은 기본값일 뿐이고, 실제 리그는 config.yaml 의 cameras.*.view_dir 로 덮어쓴다
+# (기하는 물리적 사실이라 코드가 아니라 설정이 가져야 한다).
 VIEW_DIRECTIONS: dict[str, tuple[float, float, float]] = {
     # 좌표계: +X 오른쪽, +Y 위, +Z 앞. '물체 → 카메라' 방향이며 크기는 무관(정규화한다).
     # 실제 리그는 직교 5뷰가 아니라 대각선 4대 + 하단 1대이고, 전부 45° 기준이다.
@@ -164,7 +164,7 @@ def _match_exposure(image: np.ndarray, background: np.ndarray) -> tuple[np.ndarr
     return image, matched
 
 
-def _extract_silhouette(image: np.ndarray, background: np.ndarray | None = None) -> np.ndarray:
+def extract_silhouette(image: np.ndarray, background: np.ndarray | None = None) -> np.ndarray:
     """전경(물체) 마스크 추출.
 
     background 가 있으면 배경 차분, 없으면 Otsu 이진화로 폴백한다.
@@ -215,49 +215,47 @@ def _extract_silhouette(image: np.ndarray, background: np.ndarray | None = None)
         if mask.mean() > 127:
             mask = cv2.bitwise_not(mask)
 
+    return _pick_object_component(mask)
+
+
+def _pick_object_component(mask: np.ndarray) -> np.ndarray:
+    """마스크를 다듬고 '물체'에 해당하는 덩어리 하나만 남긴다.
+
+    가장 큰 덩어리를 고르지 않는다. 스캔 리그가 실험실 한가운데 있으면
+    배경(선반·창문·케이블)이 물체보다 훨씬 커서 배경을 물체로 착각하고,
+    그러면 뷰마다 엉뚱한 영역이 잡혀 5뷰 교집합이 비어 형상이 통째로 사라진다
+    (실측: 뷰별 실루엣 11~41% 인데 교집합 0복셀).
+
+    물체는 리그 중앙에 놓인다는 전제로, 중앙 ROI 와 겹치는 면적이 가장 큰
+    덩어리를 고른다. 중앙 픽셀 하나만 보면 물체에 구멍이 있거나 살짝 치우쳤을 때
+    놓치므로 영역으로 판단한다.
+    """
     # 잔 구멍 메우기 + 노이즈 제거
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
-    # 화면 가운데에 있는 덩어리를 물체로 고른다.
-    #
-    # 예전에는 '가장 큰 덩어리'를 골랐는데, 스캔 리그가 실험실 한가운데 있으면
-    # 배경(선반·창문·케이블)이 물체보다 훨씬 커서 배경을 물체로 착각한다.
-    # 그러면 뷰마다 엉뚱한 영역이 잡혀 5뷰 교집합이 비고 3D 형상이 통째로 사라진다
-    # (실측: 뷰별 실루엣 11~41% 인데 교집합 0복셀).
-    #
-    # 물체는 리그 중앙에 놓이는 것이 전제이므로, 중앙 ROI 와 겹치는 면적이
-    # 가장 큰 덩어리를 고른다. 중앙 픽셀 하나만 보면 물체에 구멍이 있거나
-    # 살짝 치우쳤을 때 놓친다.
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    if n > 1:
-        h, w = mask.shape
-        roi = np.zeros_like(mask, dtype=bool)
-        y0, y1 = int(h * (1 - CENTER_ROI) / 2), int(h * (1 + CENTER_ROI) / 2)
-        x0, x1 = int(w * (1 - CENTER_ROI) / 2), int(w * (1 + CENTER_ROI) / 2)
-        roi[y0:y1, x0:x1] = True
+    if n <= 1:
+        return mask
 
-        # 화면 가장자리에 닿는 덩어리는 물체가 아니라 리그 구조물이다.
-        #
-        # 스캔대 위 부품은 카메라가 겨냥한 중앙에 있고 프레임 밖으로 이어지지 않는다.
-        # 반면 투명 아크릴 커버·벨트·프레임은 화면을 가로질러 양 끝까지 뻗는다.
-        # 특히 아크릴은 반사와 그림자가 촬영마다 달라져 배경 차분에 크게 잡히는데,
-        # 그 띠가 중앙을 통과하면 '중앙 겹침' 기준만으로는 물체를 이긴다(실측:
-        # 물체 대신 벨트 띠가 선택돼 정합이 0.45 로 떨어졌다).
-        overlaps = [int(np.count_nonzero((labels == i) & roi)) for i in range(1, n)]
-        best = 1 + int(np.argmax(overlaps))
-        if overlaps[best - 1] == 0:
-            # 중앙 ROI 에 걸치는 덩어리가 하나도 없다 = 물체가 화면 밖이거나
-            # 배경과 구분이 안 된다. 넓이 기준으로 되돌아가되 그대로 두면
-            # 교집합이 비어 상위에서 EmptyHullError 로 잡힌다.
-            best = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-        mask = np.where(labels == best, 255, 0).astype(np.uint8)
+    h, w = mask.shape
+    roi = np.zeros_like(mask, dtype=bool)
+    y0, y1 = int(h * (1 - CENTER_ROI) / 2), int(h * (1 + CENTER_ROI) / 2)
+    x0, x1 = int(w * (1 - CENTER_ROI) / 2), int(w * (1 + CENTER_ROI) / 2)
+    roi[y0:y1, x0:x1] = True
 
-    return mask
+    overlaps = [int(np.count_nonzero((labels == i) & roi)) for i in range(1, n)]
+    best = 1 + int(np.argmax(overlaps))
+    if overlaps[best - 1] == 0:
+        # 중앙 ROI 에 걸치는 덩어리가 하나도 없다 = 물체가 화면 밖이거나
+        # 배경과 구분이 안 된다. 넓이 기준으로 되돌아가되, 그대로 두면
+        # 교집합이 비어 상위에서 EmptyHullError 로 잡힌다.
+        best = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    return np.where(labels == best, 255, 0).astype(np.uint8)
 
 
-def _view_basis(direction) -> tuple[np.ndarray, np.ndarray]:
+def view_basis(direction) -> tuple[np.ndarray, np.ndarray]:
     """시선 방향에 수직인 이미지 평면의 (right, up) 정규직교 기저.
 
     direction 은 '물체에서 카메라를 향하는' 단위 벡터다. 카메라가 어느 대각선에
@@ -279,7 +277,7 @@ def _view_basis(direction) -> tuple[np.ndarray, np.ndarray]:
     return right, up
 
 
-def _normalize_silhouette(mask: np.ndarray, size: int) -> np.ndarray:
+def normalize_silhouette(mask: np.ndarray, size: int) -> np.ndarray:
     """실루엣을 자기 바운딩박스 기준으로 정규화한 정사각 마스크로 만든다.
 
     왜 필요한가: space carving 은 복셀을 각 뷰의 이미지 평면에 투영해 교집합을
@@ -343,7 +341,7 @@ def _carve_visual_hull(
 
     for name, raw in silhouettes.items():
         # 뷰마다 물체 크기·위치가 다르므로 바운딩박스 기준으로 맞춘 뒤 투영한다.
-        mask = _normalize_silhouette(raw, res)
+        mask = normalize_silhouette(raw, res)
         h, w = mask.shape
 
         # 시선 방향에 수직인 평면의 정규직교 기저(right, up)를 만들어 그 위에 정사영한다.
@@ -351,7 +349,7 @@ def _carve_visual_hull(
         # 가장 가까운 축으로 스냅해 버렸다. 실제 리그는 대각선 4대 + 하단 1대라
         # 어느 것도 축에 정렬돼 있지 않아 형상이 물체와 전혀 다르게 나왔다.
         table = directions or VIEW_DIRECTIONS
-        right, up = _view_basis(table.get(name, VIEW_DIRECTIONS.get(name, (0.0, 0.0, 1.0))))
+        right, up = view_basis(table.get(name, VIEW_DIRECTIONS.get(name, (0.0, 0.0, 1.0))))
 
         pu = cx * right[0] + cy * right[1] + cz * right[2]
         pv = cx * up[0] + cy * up[1] + cz * up[2]
@@ -426,7 +424,7 @@ def _project_pixels(res: int, direction, size: int):
     gx, gy, gz = np.meshgrid(idx, idx, idx, indexing="ij")
     cx, cy, cz = (g / (res - 1) - 0.5 for g in (gx, gy, gz))
 
-    right, up = _view_basis(direction)
+    right, up = view_basis(direction)
     pu = cx * right[0] + cy * right[1] + cz * right[2]
     pv = cx * up[0] + cy * up[1] + cz * up[2]
     su = 0.5 * float(np.abs(right).sum())
@@ -467,7 +465,7 @@ def silhouette_consistency(
             scores.append(0.0)
             continue
 
-        mask = _normalize_silhouette(silhouettes[held_out], resolution) > 0
+        mask = normalize_silhouette(silhouettes[held_out], resolution) > 0
         px, py = _project_pixels(
             resolution, directions.get(held_out, (0.0, 0.0, 1.0)), resolution
         )
@@ -476,12 +474,6 @@ def silhouette_consistency(
         union = (shadow | mask).sum()
         scores.append((shadow & mask).sum() / union if union else 0.0)
     return float(np.mean(scores))
-
-
-def _spherical(azimuth_deg: float, elevation_deg: float) -> tuple[float, float, float]:
-    """방위각·고도각 → 방향 벡터. 방위 0° = +Z(정면), 고도 +90° = 바로 위."""
-    a, e = np.radians(azimuth_deg), np.radians(elevation_deg)
-    return (float(np.sin(a) * np.cos(e)), float(np.sin(e)), float(np.cos(a) * np.cos(e)))
 
 
 def _volume_to_mesh(volume: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -596,7 +588,7 @@ def reconstruct_from_views(
 
     backgrounds = backgrounds or {}
     silhouettes = {
-        name: _extract_silhouette(img, backgrounds.get(name))
+        name: extract_silhouette(img, backgrounds.get(name))
         for name, img in view_images.items()
     }
     coverage = {name: float((m > 0).mean()) for name, m in silhouettes.items()}

@@ -6,24 +6,23 @@ import json
 import time
 
 import numpy as np
-from flask import Blueprint, Response, current_app, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 
 from ..core.reconstruct3d import (
-    _extract_silhouette as extract_silhouette,
+    extract_silhouette,
+    load_backgrounds,
+    load_object_views,
+    reconstruct_from_views,
 )
-from ..core.reconstruct3d import load_backgrounds, load_object_views, reconstruct_from_views
 from ..core.cad import compare_with_scan, load_reference, save_model
 from ..core.storage import imwrite, validate_id
 from ..utils.errors import ValidationError
+from . import current_hub
 
 bp = Blueprint("analysis", __name__, url_prefix="/api")
 
 # 업로드 상한. 이보다 큰 STL 은 브라우저에서 렌더링도 버겁다.
 MAX_MODEL_BYTES = 50_000_000
-
-
-def _hub():
-    return current_app.extensions["omx_hub"]
 
 
 # ══════════════════════════ ACT 학습 ══════════════════════════
@@ -42,7 +41,7 @@ def train_start():
         "seed": int(body.get("seed", 42)),
     }
     try:
-        status = _hub().training.start(params, demo=demo)
+        status = current_hub().training.start(params, demo=demo)
     except RuntimeError as exc:
         raise ValidationError(str(exc)) from exc
     return jsonify({"ok": True, "training": status})
@@ -51,7 +50,7 @@ def train_start():
 @bp.post("/train/stop")
 def train_stop():
     try:
-        status = _hub().training.stop()
+        status = current_hub().training.stop()
     except RuntimeError as exc:
         raise ValidationError(str(exc)) from exc
     return jsonify({"ok": True, "training": status})
@@ -59,7 +58,7 @@ def train_stop():
 
 @bp.get("/train/status")
 def train_status():
-    return jsonify({"ok": True, "training": _hub().training.status()})
+    return jsonify({"ok": True, "training": current_hub().training.status()})
 
 
 @bp.get("/train/stream")
@@ -69,7 +68,7 @@ def train_stream():
     폴링 대신 SSE 를 쓰는 이유: 에폭이 끝날 때마다 즉시 밀어줘야 차트가
     '자라나는' 느낌이 난다. 폴링은 간격만큼 지연되고 빈 응답이 낭비된다.
     """
-    manager = _hub().training
+    manager = current_hub().training
 
     def generate():
         last_count = -1
@@ -101,7 +100,7 @@ def train_stream():
 @bp.get("/scan/objects")
 def scan_objects():
     """재구성 가능한 스캔 물체 목록(classification 폴더 기준)."""
-    root = _hub().cfg.recording.root
+    root = current_hub().cfg.recording.root
     items = []
     for label in ("good", "defect"):
         label_dir = root / "classification" / label
@@ -123,7 +122,7 @@ def scan_background():
 
     조명이나 카메라 위치가 바뀌면 다시 찍어야 한다.
     """
-    hub = _hub()
+    hub = current_hub()
     frames, _ = hub.cameras.snapshot()
     if not frames:
         raise ValidationError("카메라에서 프레임을 받지 못했습니다. 연결 상태를 확인하세요.")
@@ -143,7 +142,7 @@ def scan_model(object_id: str):
     스캔으로 형상을 '만드는' 것보다 설계 형상을 그대로 쓰는 편이 정확하다.
     5뷰 visual hull 은 오목부를 복원하지 못하고 절대 치수도 없다.
     """
-    hub = _hub()
+    hub = current_hub()
     root = hub.cfg.recording.root
     mesh = load_reference(root, object_id)
     if mesh is None:
@@ -193,7 +192,7 @@ def upload_model(object_id: str):
         )
 
     try:
-        info = save_model(_hub().cfg.recording.root, object_id, raw)
+        info = save_model(current_hub().cfg.recording.root, object_id, raw)
     except ValueError as exc:
         raise ValidationError(f"STL 로 읽을 수 없습니다: {exc}") from exc
 
@@ -215,7 +214,7 @@ def scan_reconstruct():
     if not object_id:
         raise ValidationError("object_id 가 필요합니다.")
 
-    hub = _hub()
+    hub = current_hub()
     try:
         views = load_object_views(hub.cfg.recording.root, label, object_id)
     except FileNotFoundError as exc:

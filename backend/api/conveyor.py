@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, jsonify, request
+from . import current_hub
 
 bp = Blueprint("conveyor", __name__, url_prefix="/api/conveyor")
-
-
-def _hub():
-    return current_app.extensions["omx_hub"]
 
 
 def _ok(state: dict):
@@ -19,17 +16,17 @@ def _ok(state: dict):
 @bp.get("/status")
 def status():
     """현재 상태. 폴링해도 안전하다(연결이 끊겨 있으면 포트를 열지 않는다)."""
-    return _ok(_hub().conveyor.status())
+    return _ok(current_hub().conveyor.status())
 
 
 @bp.post("/start")
 def start():
-    return _ok(_hub().conveyor.start())
+    return _ok(current_hub().conveyor.start())
 
 
 @bp.post("/stop")
 def stop():
-    return _ok(_hub().conveyor.stop())
+    return _ok(current_hub().conveyor.stop())
 
 
 @bp.post("/speed")
@@ -40,7 +37,7 @@ def speed():
     하므로(DIP 스위치와 같은 값이 거기 박혀 있다) 호스트는 몰라도 된다.
     """
     body = request.get_json(silent=True) or {}
-    return _ok(_hub().conveyor.set_speed_rpm(body.get("rpm")))
+    return _ok(current_hub().conveyor.set_speed_rpm(body.get("rpm")))
 
 
 @bp.post("/dir")
@@ -51,7 +48,7 @@ def direction():
     (부하가 걸린 상태에서 즉시 반전시키면 탈조한다).
     """
     body = request.get_json(silent=True) or {}
-    return _ok(_hub().conveyor.set_direction(body.get("direction")))
+    return _ok(current_hub().conveyor.set_direction(body.get("direction")))
 
 
 @bp.post("/enable")
@@ -61,7 +58,7 @@ def enable():
     해제하면 홀딩 토크가 풀려 벨트를 손으로 움직일 수 있다.
     """
     body = request.get_json(silent=True) or {}
-    return _ok(_hub().conveyor.set_enabled(bool(body.get("enabled", True))))
+    return _ok(current_hub().conveyor.set_enabled(bool(body.get("enabled", True))))
 
 
 @bp.post("/release")
@@ -72,5 +69,5 @@ def release():
     그래서 업로드하려면 포트를 비워야 하는데, 그것 때문에 서버를 통째로 내리면
     카메라까지 끊긴다. 이 엔드포인트는 포트만 놓아준다. 다음 START 에서 자동 재연결.
     """
-    _hub().conveyor.disconnect()
-    return jsonify({"ok": True, "released": True, **_hub().conveyor.state})
+    current_hub().conveyor.disconnect()
+    return jsonify({"ok": True, "released": True, **current_hub().conveyor.state})

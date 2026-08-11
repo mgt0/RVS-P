@@ -22,6 +22,9 @@ from pathlib import Path
 
 import numpy as np
 
+# reconstruct3d 는 cad 를 임포트하지 않으므로 순환 참조가 없다.
+from .reconstruct3d import normalize_silhouette, view_basis
+
 logger = logging.getLogger(__name__)
 
 # 이 크기를 넘는 메시는 브라우저로 보내기 전에 줄인다. 정점 하나가 JSON 에서
@@ -178,22 +181,21 @@ def find_model(root: Path, object_id: str) -> Path | None:
 def _project_fitted(points: np.ndarray, direction, size: int, fit=None):
     """점들을 시선 방향 평면에 정사영하고, 그 결과가 화면을 꽉 채우도록 맞춘다.
 
-    관측 실루엣은 _normalize_silhouette 로 바운딩박스 정규화(물체가 정사각형을
+    관측 실루엣은 normalize_silhouette 로 바운딩박스 정규화(물체가 정사각형을
     가득 채움)를 거친다. CAD 투영을 그냥 두면 좌표계가 서로 달라 비교가 성립하지
     않는다 — 실제로 그래서 정합 일치도가 0.12 까지 떨어졌다.
 
     fit 을 넘기면 그 변환을 재사용한다. 복셀로 구한 변환을 정점에도 똑같이
     적용해야 두 결과가 같은 픽셀 격자 위에 놓인다.
     """
-    from .reconstruct3d import _view_basis
 
-    right, up = _view_basis(direction)
+    right, up = view_basis(direction)
     pu = points @ right
     pv = points @ up
 
     if fit is None:
         cu, cv = (pu.min() + pu.max()) / 2, (pv.min() + pv.max()) / 2
-        # 종횡비 유지: 긴 쪽에 맞춘다(_normalize_silhouette 의 정사각 패딩과 동일)
+        # 종횡비 유지: 긴 쪽에 맞춘다(normalize_silhouette 의 정사각 패딩과 동일)
         half = max(pu.max() - pu.min(), pv.max() - pv.min()) / 2 or 1e-6
         fit = (cu, cv, half)
 
@@ -236,10 +238,9 @@ def align_to_scan(
     형상을 이미 알고 있어 미지수가 회전 3개뿐이라, 카메라 각도까지 추정하려
     했을 때(미지수 10개, 실패)와 달리 충분히 구속된다.
     """
-    from .reconstruct3d import _normalize_silhouette
 
     res = volume.shape[0]
-    masks = {n: _normalize_silhouette(s, res) > 0 for n, s in silhouettes.items()}
+    masks = {n: normalize_silhouette(s, res) > 0 for n, s in silhouettes.items()}
     points = _voxel_points(volume)
 
     def score(rot: np.ndarray) -> float:
@@ -305,7 +306,6 @@ def deviation_colors(
     재료가 빠진 불량이 여기 잡힌다. 반대(설계엔 없는데 실제에 있는) 영역은
     CAD 표면 위에 대응점이 없어 색으로 표현할 수 없다.
     """
-    from .reconstruct3d import _normalize_silhouette
 
     res = volume.shape[0]
     neutral, alert = np.array([0.78, 0.78, 0.80]), np.array([1.0, 0.48, 0.09])
@@ -317,7 +317,7 @@ def deviation_colors(
     per_view = {}
 
     for name, raw in silhouettes.items():
-        mask = _normalize_silhouette(raw, res) > 0
+        mask = normalize_silhouette(raw, res) > 0
         d = rotation.T @ np.asarray(directions.get(name, (0.0, 0.0, 1.0)), float)
         d = d / (np.linalg.norm(d) or 1.0)
 
