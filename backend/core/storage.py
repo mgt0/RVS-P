@@ -4,11 +4,11 @@
 
     lerobot_data/
     ├── episodes/episode_XXXXXX/
-    │     ├── camera_front/frame_000000.jpg ...
-    │     ├── camera_back/ ... camera_top/
+    │     ├── camera_cam1/frame_000000.jpg ...
+    │     ├── camera_cam2/ ... camera_cam5/
     │     ├── joint_states.parquet
     │     └── metadata.json
-    └── classification/{good,defect}/<object_id>/{front,back,left,right,top}.jpg
+    └── classification/{good,defect}/<object_id>/{cam1,cam2,cam3,cam4,cam5}.jpg
 
 패턴: Strategy.
 `DatasetWriter` 인터페이스 뒤에 EpisodeWriter(ACT용 시퀀스)와
@@ -32,6 +32,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
+from ..config import DEFECT_TYPES
 from ..utils.errors import ValidationError
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,44 @@ def validate_id(value: str, field_name: str) -> str:
             f"{field_name} 는 영문/숫자/_/- 만 사용하고 64자 이내여야 합니다: '{value}'"
         )
     return value
+
+
+def imwrite(path: Path, image: np.ndarray, quality: int) -> None:
+    """JPEG 저장. cv2.imwrite 를 직접 쓰지 않는다.
+
+    cv2.imwrite/imread 는 경로를 ANSI 코드페이지로 해석해 비ASCII 경로에서
+    **조용히 False 를 반환**한다(예외도 없다). 이 프로젝트는 `바탕 화면` 같은
+    한글 경로 아래에서 도는 게 정상 사용이라, 그대로 두면 에피소드가 프레임
+    0장으로 저장된다. 인코딩과 파일 쓰기를 분리해 파이썬이 경로를 다루게 한다.
+    """
+    ok, buf = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    if not ok:
+        raise OSError(f"JPEG 인코딩 실패: {path}")
+    path.write_bytes(buf.tobytes())
+
+
+def imread(path: Path) -> np.ndarray | None:
+    """JPEG 로드. imwrite 와 같은 이유로 cv2.imread 를 쓰지 않는다."""
+    if not path.exists():
+        return None
+    return cv2.imdecode(np.fromfile(path, np.uint8), cv2.IMREAD_COLOR)
+
+
+def validate_label(label: str, defect_type: str | None) -> tuple[str, str | None]:
+    """라벨 쌍 검증. 녹화 시작(Recorder)과 사후 수정(DatasetIndex.update)이 공유한다.
+
+    한쪽에만 두면 수정 API 로 'good + scratch' 같은 오염된 조합이 들어온다.
+    """
+    label = (label or "").lower()
+    if label not in {"good", "defect"}:
+        raise ValidationError("label 은 'good' 또는 'defect' 여야 합니다.")
+    if label == "defect":
+        if defect_type not in DEFECT_TYPES:
+            raise ValidationError(
+                f"defect_type 은 {', '.join(DEFECT_TYPES)} 중 하나여야 합니다."
+            )
+        return label, defect_type
+    return label, None  # GOOD 인데 defect_type 이 남아있으면 라벨 오염
 
 
 @dataclass
@@ -97,10 +136,6 @@ class EpisodeWriter:
         self._rows: list[dict] = []
         self._frame_index = 0
 
-    @property
-    def directory(self) -> Path | None:
-        return self._dir
-
     def open(self, meta: EpisodeMeta) -> None:
         target = self._root / "episodes" / f"episode_{meta.episode_id}"
         # exist_ok=False: 같은 ID 로 덮어써서 기존 에피소드를 조용히 날리는 사고를 막는다.
@@ -124,11 +159,7 @@ class EpisodeWriter:
         filename = f"frame_{idx:06d}.jpg"
 
         for cam, image in sample.frames.items():
-            cv2.imwrite(
-                str(self._dir / f"camera_{cam}" / filename),
-                image,
-                [int(cv2.IMWRITE_JPEG_QUALITY), self._quality],
-            )
+            imwrite(self._dir / f"camera_{cam}" / filename, image, self._quality)
 
         row: dict = {
             "frame_index": idx,
@@ -187,13 +218,14 @@ class ClassificationWriter:
     에피소드 전체가 아니라 '대표 한 세트'만 남긴다. 시퀀스 프레임을 전부
     분류 데이터로 쓰면 거의 동일한 이미지가 수천 장 들어가 과적합과
     train/val 누수를 부른다.
+
+    대표 프레임은 '마지막 정상 프레임'이다. 에피소드 총 길이를 미리 알 수 없어
+    "50% 지점" 같은 진행률 기준을 스트리밍 중에 고를 수 없기 때문이다.
     """
 
-    def __init__(self, root: Path, capture_at: float = 0.5, jpeg_quality: int = 95) -> None:
+    def __init__(self, root: Path, jpeg_quality: int = 95) -> None:
         self._root = root
-        self._capture_at = capture_at
         self._quality = jpeg_quality
-        self._captured = False
         self._pending: dict[str, np.ndarray] = {}
         self._dir: Path | None = None
 
@@ -201,12 +233,9 @@ class ClassificationWriter:
         label_dir = "defect" if meta.label == "defect" else "good"
         self._dir = self._root / "classification" / label_dir / meta.object_id
         self._dir.mkdir(parents=True, exist_ok=True)
-        self._captured = False
         self._pending = {}
 
     def write(self, sample: Sample) -> None:
-        # 진행률 기반 선택은 총 길이를 미리 모르므로, 마지막 샘플을 계속 갱신하다가
-        # close() 시점에 확정한다. 결과적으로 '가장 최근 정상 프레임'이 저장된다.
         if sample.frames:
             self._pending = {k: v.copy() for k, v in sample.frames.items()}
 
@@ -220,7 +249,7 @@ class ClassificationWriter:
             path = self._dir / f"{cam}.jpg"
             if path.exists():
                 path = self._dir / f"{cam}_{meta.episode_id}.jpg"
-            cv2.imwrite(str(path), image, [int(cv2.IMWRITE_JPEG_QUALITY), self._quality])
+            imwrite(path, image, self._quality)
 
         label_meta = self._dir / "labels.json"
         history = json.loads(label_meta.read_text(encoding="utf-8")) if label_meta.exists() else []
@@ -233,34 +262,100 @@ class ClassificationWriter:
             }
         )
         label_meta.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
-        self._captured = True
 
     def abort(self) -> None:
         self._pending = {}
 
 
 class DatasetIndex:
-    """수집 현황 집계. UI 하단의 에피소드 카운트를 위한 읽기 전용 뷰."""
+    """수집 현황 집계 + 저장된 에피소드의 사후 편집.
+
+    라벨은 사람이 눈으로 보고 정하므로 반드시 틀린다. 잘못 붙은 라벨을
+    고치려고 폴더를 손으로 옮기면 metadata.json 과 분류 폴더가 어긋나므로,
+    두 곳을 한 번에 바꾸는 경로를 여기 하나만 둔다.
+    """
 
     def __init__(self, root: Path) -> None:
         self._root = root
         self._lock = threading.Lock()
 
-    def summary(self) -> dict:
+    # ------------------------------------------------------------------ 편집
+    def list(self) -> list[dict]:
+        """metadata.json 목록. 중단되어 메타가 없는 디렉터리는 건너뛴다."""
+        out: list[dict] = []
+        for path in sorted((self._root / "episodes").glob("episode_*")):
+            meta_file = path / "metadata.json"
+            if not meta_file.exists():
+                continue
+            try:
+                out.append(json.loads(meta_file.read_text(encoding="utf-8")))
+            except json.JSONDecodeError:
+                logger.warning("metadata.json 파손, 목록에서 제외: %s", meta_file)
+        return out
+
+    def update(
+        self,
+        episode_id: str,
+        *,
+        object_id: str | None = None,
+        label: str | None = None,
+        defect_type: str | None = None,
+    ) -> dict:
+        """라벨/물체 ID 수정. None 인 필드는 기존 값을 유지한다."""
+        meta_file = self._meta_path(episode_id)
         with self._lock:
-            episodes_dir = self._root / "episodes"
-            classification_dir = self._root / "classification"
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
 
-            episodes = sorted(p.name for p in episodes_dir.glob("episode_*") if p.is_dir())
-            good = len(list((classification_dir / "good").glob("*"))) if (classification_dir / "good").exists() else 0
-            defect = len(list((classification_dir / "defect").glob("*"))) if (classification_dir / "defect").exists() else 0
+            new_object = validate_id(object_id, "object_id") if object_id is not None else meta["object_id"]
+            new_label, new_defect = validate_label(
+                meta["label"] if label is None else label,
+                meta.get("defect_type") if defect_type is None else defect_type,
+            )
 
-            return {
-                "total_episodes": len(episodes),
-                "recent_episodes": episodes[-5:][::-1],
-                "good_objects": good,
-                "defect_objects": defect,
-            }
+            self._move_classification(meta["label"], meta["object_id"], new_label, new_object)
+            meta.update(object_id=new_object, label=new_label, defect_type=new_defect)
+            meta_file.write_text(
+                json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            logger.info("에피소드 수정: %s → %s/%s", episode_id, new_label, new_object)
+            return meta
+
+    def delete(self, episode_id: str) -> None:
+        target = self._meta_path(episode_id).parent
+        with self._lock:
+            shutil.rmtree(target)
+            # 분류 이미지는 남긴다. 같은 object_id 의 다른 에피소드가 함께 쓰는 폴더다.
+            logger.warning("에피소드 삭제: %s", target)
+
+    def _meta_path(self, episode_id: str) -> Path:
+        episode_id = validate_id(episode_id, "episode_id")
+        meta_file = self._root / "episodes" / f"episode_{episode_id}" / "metadata.json"
+        if not meta_file.exists():
+            raise ValidationError(f"에피소드 '{episode_id}' 를 찾을 수 없습니다.")
+        return meta_file
+
+    def _move_classification(self, old_label, old_object, new_label, new_object) -> None:
+        """분류 이미지 폴더를 함께 옮긴다.
+
+        메타만 고치면 classification/good/<obj> 에 불량 사진이 남아 CNN 학습셋이
+        조용히 오염된다. 라벨 수정의 절반을 빼먹는 것과 같다.
+
+        ponytail: 폴더 단위로 옮기므로 같은 object_id 를 공유하는 형제 에피소드의
+        metadata.json 은 따라오지 않는다. 형제까지 일괄 갱신은 필요해지면 추가.
+        """
+        if (old_label, old_object) == (new_label, new_object):
+            return
+        src = self._root / "classification" / old_label / old_object
+        if not src.exists():
+            return
+        dst = self._root / "classification" / new_label / new_object
+        if dst.exists():
+            raise ValidationError(
+                f"'{new_label}/{new_object}' 분류 폴더가 이미 있습니다. "
+                "다른 object_id 를 쓰거나 기존 폴더를 먼저 정리하세요."
+            )
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dst))
 
     def next_episode_id(self) -> str:
         """episode_000042 다음은 000043. 빈 슬롯을 재사용하지 않는다."""

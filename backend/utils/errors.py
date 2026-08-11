@@ -87,3 +87,21 @@ class RecordingStateError(OmxError):
 class ValidationError(OmxError):
     status_code = 400
     code = "validation_failed"
+
+
+class EmptyHullError(OmxError):
+    """실루엣 교집합이 비어 3D 형상이 만들어지지 않았다.
+
+    서버 잘못이 아니라 촬영 조건 문제이므로 422 로 돌려주고,
+    어느 뷰가 문제인지 detail 에 담아 사용자가 다시 찍을 수 있게 한다.
+    """
+
+    status_code = 422
+    code = "empty_visual_hull"
+
+
+class ConveyorError(OmxError):
+    """ESP32 컨베이어 서버에 연결/응답 실패."""
+
+    status_code = 503
+    code = "conveyor_unreachable"
