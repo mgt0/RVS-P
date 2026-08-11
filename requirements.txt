@@ -21,3 +21,8 @@ gevent==24.2.1
 
 # --- 개발/테스트 (선택) ---
 pytest==8.3.3
+
+# --- 실제 LeRobot ACT 학습/rollout (선택, 무거움) ---
+# 대시보드/텔레옵/녹화/3D스캔/컨베이어·게이트만 다루면 이 아래는 설치 불필요.
+# torch+lerobot을 다루는 사람만: pip install -r requirements-lerobot.txt
+# (병렬 작업 시 전원이 무거운 GPU 의존성을 안 깔아도 되게 하기 위한 분리입니다.)

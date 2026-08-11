@@ -177,6 +177,67 @@ Success@τ는 **모든 관절이 동시에** 임계값 이내일 때만 성공�
 실시간 전송은 **SSE**(Server-Sent Events)를 씁니다. 폴링은 간격만큼 늘 뒤처지지만, SSE는
 에폭이 끝나는 즉시 차트가 자랍니다.
 
+## 실제 LeRobot ACT 학습 · rollout (신규, Windows 검증용)
+
+기존 `DEMO` 모드(가짜 학습곡선)와 별개로, 실제 `lerobot` 패키지로 학습하고
+그 결과로 팔로워를 자율 제어(rollout)하는 경로를 추가했다. 관련 코드는
+`backend/core/lerobot_bridge.py`(변환+학습세션+추론)와 `backend/core/rollout.py`
+(자율 제어 루프) 두 파일에 격리돼 있다 — 이 두 파일이 없어도(=lerobot 미설치)
+나머지 대시보드는 그대로 기동된다.
+
+### 설치
+
+```bash
+pip install -r requirements.txt              # 코어 (전원 필수)
+pip install -r requirements-lerobot.txt       # 학습/rollout 담당자만 추가 설치
+```
+
+Windows에서 자주 걸리는 지점(GitHub 이슈 번호 기준):
+
+| 증상 | 원인/해결 |
+|---|---|
+| GPU 있는데 CPU 전용 torch가 깔림 | `uv sync` 대신 [pytorch.org](https://pytorch.org/get-started/locally/)에서 CUDA 버전 맞는 인덱스로 먼저 설치 ([lerobot#4093](https://github.com/huggingface/lerobot/issues/4093)) |
+| 카메라가 인식 안 됨 | `config.yaml`의 `camera.device`를 정수 인덱스 대신 실제 경로/이름으로 ([lerobot#1456](https://github.com/huggingface/lerobot/issues/1456)) |
+| `usb-port` 설정 오류 | COM 포트 문자열 표기 재확인 ([lerobot#1094](https://github.com/huggingface/lerobot/issues/1094)) — omx-factory-system 자체 텔레옵이 이미 같은 포트로 동작 중이라면 그 값 그대로 쓰면 된다 |
+
+### 절차 (teleop → 녹화는 이미 되는 상태에서 이어서)
+
+1. **에피소드 녹화** — 지금 있는 대시보드 그대로: 텔레옵 켜고 `/api/recording/start`
+   (label=`good`)로 정상 파지 시연을 여러 번 녹화한다. 소규모 검증이면 10~20개면 충분.
+2. **데이터셋 변환** (선택 — 학습 시작 시 자동으로도 됨, 미리 확인하고 싶으면):
+   ```bash
+   python scripts/convert_dataset.py --output lerobot_data/lerobot_datasets/local__omx_pick_and_place
+   ```
+3. **학습** — 대시보드의 `ACT 학습·실시간` 패널에서 `demo=false`로 시작하거나:
+   ```bash
+   python scripts/train.py --epochs 30 --lerobot
+   ```
+   진행 상황(loss/MAE/success@τ)은 DEMO 모드와 동일한 SSE 스트림·차트로 그대로 보인다.
+4. **Rollout** — 학습이 끝나면 체크포인트가 `lerobot_data/checkpoints/<repo_id>/`에 저장된다.
+   ```
+   POST /api/rollout/start   {}                         ← 최신 체크포인트 자동 사용
+   POST /api/rollout/start   {"checkpoint": "<경로>"}    ← 특정 체크포인트 지정
+   POST /api/rollout/stop
+   GET  /api/rollout/status
+   ```
+   teleop과 rollout은 둘 다 팔로워를 직접 제어하므로 **상호 배타적**이다 — 하나가
+   실행 중이면 다른 하나는 시작을 거부한다(안전을 위해 `SafetyGuard` 클램프도
+   teleop과 동일하게 적용됨).
+
+### 주의
+
+- 자체 저장 포맷(`lerobot_data/episodes/`)은 공식 `LeRobotDataset` 스키마가
+  아니다. 변환 단계(`convert_episodes_to_dataset`)가 그 간극을 메운다 — 원본
+  에피소드 폴더는 그대로 두고, 변환 결과만 별도 폴더(`lerobot_datasets/`,
+  git 추적 제외)에 만든다.
+- `lerobot`의 Python API는 버전마다 모듈 경로가 바뀐다. `lerobot_bridge.py`의
+  `_import_lerobot_modules()`가 신/구 경로를 순서대로 시도하지만, 그래도 안 맞으면
+  `python -c "from lerobot.datasets.lerobot_dataset import LeRobotDataset; help(LeRobotDataset.create)"`
+  로 실제 시그니처를 먼저 확인할 것.
+- `lerobot_bridge.quick_eval()`이 계산하는 val 지표는 held-out validation
+  split이 아니라 매 에폭 마지막 학습 배치로 추정한 값이다(대략적 추이 확인용).
+  엄밀한 검증이 필요하면 별도 val set을 분리하도록 바꿀 것.
+
 ## 3D 스캔 검사
 
 5뷰 스캔 이미지에서 3D 형상을 만들어 마우스로 돌려가며 검사합니다.
