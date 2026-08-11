@@ -101,13 +101,20 @@ class TestEpisodeEdit:
         with pytest.raises(ValidationError):
             DatasetIndex(tmp_path).delete("../../etc")
 
-    def test_삭제하면_목록에서_사라진다(self, tmp_path):
+    def test_마지막_에피소드를_지우면_분류_이미지도_함께_지운다(self, tmp_path):
+        # 남겨두면 3D 검사 드롭다운에 유령 물체로 계속 뜬다.
         make_episode(tmp_path, "000001", "bracket_a", "good")
         index = DatasetIndex(tmp_path)
-        assert len(index.list()) == 1
         index.delete("000001")
         assert index.list() == []
-        # 분류 이미지는 다른 에피소드가 공유할 수 있으므로 남는다
+        assert not (tmp_path / "classification/good/bracket_a").exists()
+
+    def test_형제_에피소드가_남아있으면_분류_이미지는_보존한다(self, tmp_path):
+        # 분류 이미지는 같은 물체의 에피소드들이 공유하는 자산이다.
+        make_episode(tmp_path, "000001", "bracket_a", "good")
+        make_episode(tmp_path, "000002", "bracket_a", "good", frames=1)
+        index = DatasetIndex(tmp_path)
+        index.delete("000001")
         assert (tmp_path / "classification/good/bracket_a/front.jpg").exists()
 
 

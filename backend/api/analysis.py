@@ -99,16 +99,28 @@ def train_stream():
 # ══════════════════════════ 3D 재구성 ══════════════════════════
 @bp.get("/scan/objects")
 def scan_objects():
-    """재구성 가능한 스캔 물체 목록(classification 폴더 기준)."""
-    root = current_hub().cfg.recording.root
+    """재구성 가능한 스캔 물체 목록.
+
+    classification 폴더만 보지 않고 에피소드 메타와 대조한다. 에피소드를
+    지우면 그 물체는 목록에서도 사라져야 한다 — 폴더 기준으로만 나열하면
+    지운 데이터가 드롭다운에 유령처럼 남는다. 이미지 파일 자체는 지우지
+    않으므로(청소는 에피소드 삭제 쪽 책임) 목록 필터일 뿐이다.
+    """
+    hub = current_hub()
+    root = hub.cfg.recording.root
+    alive = {(m["label"], m["object_id"]) for m in hub.recorder.index.list()}
+
     items = []
     for label in ("good", "defect"):
         label_dir = root / "classification" / label
         if not label_dir.exists():
             continue
         for obj in sorted(p for p in label_dir.iterdir() if p.is_dir()):
+            if (label, obj.name) not in alive:
+                continue
             views = sorted({p.stem.split("_")[0] for p in obj.glob("*.jpg")})
-            items.append({"object_id": obj.name, "label": label, "views": views})
+            if views:
+                items.append({"object_id": obj.name, "label": label, "views": views})
     return jsonify({"ok": True, "objects": items})
 
 
