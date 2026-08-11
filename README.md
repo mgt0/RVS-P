@@ -29,6 +29,11 @@ OMX_SIMULATE=0 python run.py
 ./scripts/serve.sh
 ```
 
+> **Windows**: 위 명령들은 Linux 기준입니다. 가상환경은 `.venv\Scripts\activate`,
+> 환경변수는 `$env:OMX_SIMULATE="0"` 로 씁니다. `serve.sh` 의 gunicorn 은
+> Windows 에서 동작하지 않으므로 `python run.py` 를 그대로 쓰세요.
+> 포트 이름도 `/dev/ttyACM*` 대신 `COM*` 입니다(식별 전략은 동일).
+
 ---
 
 ## 왜 이렇게 만들었는가
@@ -136,6 +141,9 @@ lerobot_data/
 | GET | `/api/stream/<name>?fps=&q=` | MJPEG 스트림 |
 | GET | `/api/snapshot/<name>` | 단일 JPEG |
 | POST | `/api/recording/{start,stop}` | 수집 제어 |
+| GET | `/api/episodes` | 저장된 에피소드 목록 (metadata.json) |
+| PATCH | `/api/episodes/<id>` | 라벨·물체 ID 수정 (분류 폴더도 함께 이동) |
+| DELETE | `/api/episodes/<id>` | 에피소드 삭제 (녹화 중이면 거부) |
 | POST | `/api/teleop/{start,stop}` | 텔레오퍼레이션 |
 | POST | `/api/arm/home` | 홈 복귀 (녹화 중 거부) |
 | POST | `/api/train/{start,stop}` | ACT 학습 제어 (demo/lerobot 모드) |
@@ -151,6 +159,33 @@ lerobot_data/
 { "ok": false, "error": { "code": "arm_port_not_found",
   "message": "LEADER arm 포트를 찾지 못했습니다…", "detail": { "role": "leader" } } }
 ```
+
+---
+
+## 실제 ACT 학습 — LeRobot 변환
+
+이 저장소의 폴더 구조는 사람이 읽기 위한 것이라 LeRobot 표준 데이터셋이 아닙니다.
+학습 전에 한 번 변환합니다.
+
+```bash
+python scripts/to_lerobot.py --repo-id omx/scan
+lerobot-train --dataset.repo_id=omx/scan --policy.type=act
+```
+
+변환의 핵심은 관측/행동 대응입니다.
+
+| LeRobot 필드 | 우리 컬럼 | 의미 |
+|---|---|---|
+| `observation.state` | `follower_joint_*` | 지금 로봇이 있는 자세 |
+| `action` | `leader_joint_*` | 사람이 시킨 자세 |
+| `observation.images.<cam>` | `camera_<cam>/frame_*.jpg` | 같은 타임스텝의 프레임 |
+
+둘이 뒤바뀌면 정책은 "현재 자세 → 현재 자세"를 배우고, 손실은 예쁘게 떨어지지만
+로봇은 아무것도 하지 않습니다. `tests/test_episodes.py` 가 이 대응을 고정합니다.
+
+meta/*.jsonl·청킹·stats 집계는 직접 쓰지 않고 `LeRobotDataset.create/add_frame/
+save_episode` 에 맡깁니다. 어차피 학습에 lerobot 이 필요하고, 손으로 쓴 포맷은
+lerobot 버전이 오르면 조용히 어긋납니다.
 
 ---
 
@@ -177,66 +212,39 @@ Success@τ는 **모든 관절이 동시에** 임계값 이내일 때만 성공�
 실시간 전송은 **SSE**(Server-Sent Events)를 씁니다. 폴링은 간격만큼 늘 뒤처지지만, SSE는
 에폭이 끝나는 즉시 차트가 자랍니다.
 
-## 실제 LeRobot ACT 학습 · rollout (신규, Windows 검증용)
+---
 
-기존 `DEMO` 모드(가짜 학습곡선)와 별개로, 실제 `lerobot` 패키지로 학습하고
-그 결과로 팔로워를 자율 제어(rollout)하는 경로를 추가했다. 관련 코드는
-`backend/core/lerobot_bridge.py`(변환+학습세션+추론)와 `backend/core/rollout.py`
-(자율 제어 루프) 두 파일에 격리돼 있다 — 이 두 파일이 없어도(=lerobot 미설치)
-나머지 대시보드는 그대로 기동된다.
+## Rollout — 학습된 ACT 정책으로 자율 실행 (신규)
 
-### 설치
+위 절차(`to_lerobot.py` → `lerobot-train`)로 학습이 끝나면, 그 체크포인트로
+팔로워를 자율 제어할 수 있다. 학습(`lerobot-train`)은 의도적으로 이 서버
+프로세스 밖에서 돈다 — 카메라 5대와 시리얼 포트를 쥔 채로 GPU를 몇 시간
+점유할 수는 없기 때문이다(`backend/core/act_trainer.py`의 `LeRobotTrainer`
+참고). 반대로 **rollout(추론)은 이 프로세스 안에서** 돈다 — 팔로워/카메라를
+이미 `HardwareHub`가 쥐고 있어서다. 관련 코드는 `backend/core/lerobot_bridge.py`
+(`ActInferenceRunner`, 추론 전용)와 `backend/core/rollout.py`(`AutoRunLoop`,
+`TeleopLoop`과 대칭 구조) — 이 두 파일이 없어도(=lerobot 미설치) 나머지
+대시보드는 그대로 기동된다.
 
 ```bash
-pip install -r requirements.txt              # 코어 (전원 필수)
-pip install -r requirements-lerobot.txt       # 학습/rollout 담당자만 추가 설치
+pip install -r requirements.txt -r requirements-lerobot.txt   # rollout 담당자만
 ```
 
-Windows에서 자주 걸리는 지점(GitHub 이슈 번호 기준):
+```
+POST /api/rollout/start   {"checkpoint": "outputs/train/<job>/checkpoints/<step>/pretrained_model"}
+POST /api/rollout/stop
+GET  /api/rollout/status
+```
 
-| 증상 | 원인/해결 |
-|---|---|
-| GPU 있는데 CPU 전용 torch가 깔림 | `uv sync` 대신 [pytorch.org](https://pytorch.org/get-started/locally/)에서 CUDA 버전 맞는 인덱스로 먼저 설치 ([lerobot#4093](https://github.com/huggingface/lerobot/issues/4093)) |
-| 카메라가 인식 안 됨 | `config.yaml`의 `camera.device`를 정수 인덱스 대신 실제 경로/이름으로 ([lerobot#1456](https://github.com/huggingface/lerobot/issues/1456)) |
-| `usb-port` 설정 오류 | COM 포트 문자열 표기 재확인 ([lerobot#1094](https://github.com/huggingface/lerobot/issues/1094)) — omx-factory-system 자체 텔레옵이 이미 같은 포트로 동작 중이라면 그 값 그대로 쓰면 된다 |
+- `checkpoint`는 필수다. 학습이 별도 프로세스라 이 서버는 어떤 체크포인트가
+  최신인지 알 방법이 없다 — `lerobot-train` 로그 마지막 줄에 찍힌 경로를 그대로 쓴다.
+- teleop과 rollout은 둘 다 `follower.write()`를 호출하는 루프라 **상호 배타적**이다.
+  하나가 실행 중이면 다른 하나는 시작을 거부한다. `SafetyGuard`(소프트리밋 +
+  상대변화량 클램프)는 teleop과 완전히 동일하게 rollout에도 적용된다.
+- `frames`로 넘기는 카메라 이름은 `CAMERA_ORDER`(`cam1`~`cam5`)와 일치해야
+  한다 — 학습 때 못 본 카메라 이름을 주면 정책이 조용히 무시하거나 에러를 낸다.
 
-### 절차 (teleop → 녹화는 이미 되는 상태에서 이어서)
-
-1. **에피소드 녹화** — 지금 있는 대시보드 그대로: 텔레옵 켜고 `/api/recording/start`
-   (label=`good`)로 정상 파지 시연을 여러 번 녹화한다. 소규모 검증이면 10~20개면 충분.
-2. **데이터셋 변환** (선택 — 학습 시작 시 자동으로도 됨, 미리 확인하고 싶으면):
-   ```bash
-   python scripts/convert_dataset.py --output lerobot_data/lerobot_datasets/local__omx_pick_and_place
-   ```
-3. **학습** — 대시보드의 `ACT 학습·실시간` 패널에서 `demo=false`로 시작하거나:
-   ```bash
-   python scripts/train.py --epochs 30 --lerobot
-   ```
-   진행 상황(loss/MAE/success@τ)은 DEMO 모드와 동일한 SSE 스트림·차트로 그대로 보인다.
-4. **Rollout** — 학습이 끝나면 체크포인트가 `lerobot_data/checkpoints/<repo_id>/`에 저장된다.
-   ```
-   POST /api/rollout/start   {}                         ← 최신 체크포인트 자동 사용
-   POST /api/rollout/start   {"checkpoint": "<경로>"}    ← 특정 체크포인트 지정
-   POST /api/rollout/stop
-   GET  /api/rollout/status
-   ```
-   teleop과 rollout은 둘 다 팔로워를 직접 제어하므로 **상호 배타적**이다 — 하나가
-   실행 중이면 다른 하나는 시작을 거부한다(안전을 위해 `SafetyGuard` 클램프도
-   teleop과 동일하게 적용됨).
-
-### 주의
-
-- 자체 저장 포맷(`lerobot_data/episodes/`)은 공식 `LeRobotDataset` 스키마가
-  아니다. 변환 단계(`convert_episodes_to_dataset`)가 그 간극을 메운다 — 원본
-  에피소드 폴더는 그대로 두고, 변환 결과만 별도 폴더(`lerobot_datasets/`,
-  git 추적 제외)에 만든다.
-- `lerobot`의 Python API는 버전마다 모듈 경로가 바뀐다. `lerobot_bridge.py`의
-  `_import_lerobot_modules()`가 신/구 경로를 순서대로 시도하지만, 그래도 안 맞으면
-  `python -c "from lerobot.datasets.lerobot_dataset import LeRobotDataset; help(LeRobotDataset.create)"`
-  로 실제 시그니처를 먼저 확인할 것.
-- `lerobot_bridge.quick_eval()`이 계산하는 val 지표는 held-out validation
-  split이 아니라 매 에폭 마지막 학습 배치로 추정한 값이다(대략적 추이 확인용).
-  엄밀한 검증이 필요하면 별도 val set을 분리하도록 바꿀 것.
+---
 
 ## 3D 스캔 검사
 

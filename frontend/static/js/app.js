@@ -33,6 +33,22 @@ const api = {
   },
   get(path) { return this.request(path); },
   post(path, body) { return this.request(path, { method: 'POST', body: body || {} }); },
+  patch(path, body) { return this.request(path, { method: 'PATCH', body: body || {} }); },
+  del(path) { return this.request(path, { method: 'DELETE' }); },
+
+  /* 파일 업로드는 request() 를 타지 않는다. FormData 를 JSON.stringify 하면
+     "[object FormData]" 가 되고, Content-Type 을 직접 지정하면 브라우저가
+     multipart 경계 문자열을 못 붙여 서버가 파일을 못 찾는다. 둘 다 비워야 한다. */
+  async upload(path, file) {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(path, { method: 'POST', body: form });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || data?.ok === false) {
+      throw new Error(data?.error?.message || `업로드 실패 (HTTP ${res.status})`);
+    }
+    return data;
+  },
 };
 
 createApp({
@@ -42,8 +58,7 @@ createApp({
 
     const status = reactive({
       recording: {
-        state: 'IDLE', frame_count: 0, elapsed_sec: 0, max_skew_ms: 0,
-        skew_violations: 0, total_episodes: 0, good_objects: 0, defect_objects: 0,
+        state: 'IDLE', frame_count: 0, elapsed_sec: 0, max_skew_ms: 0, skew_violations: 0,
       },
       leader: { joints: [], connected: false },
       follower: { joints: [], connected: false },
@@ -52,17 +67,26 @@ createApp({
     });
 
     const meta = reactive({
-      cameras: ['front', 'back', 'left', 'right', 'top', 'global'],
+      cameras: ['cam1', 'cam2', 'cam3', 'cam4', 'cam5', 'global'],
       defect_types: ['scratch', 'dent', 'discoloration', 'crack', 'other'],
       sample_rate_hz: 30,
       max_relative_target: 5,
       simulate: false,
     });
 
+    // 컨베이어(ESP32+TB6600). /api/conveyor/* 응답을 그대로 담는다.
+    const conveyor = reactive({
+      connected: false, running: false, enabled: true, dir: 'cw', rpm: 0, target_rpm: null,
+    });
+    // 목표 속도(모터축 RPM). 기본값은 확실히 도는 저속 — 올리면서 탈조 한계를 찾는다.
+    const conveyorRpm = ref(2);
+
     const form = reactive({ episodeId: '', objectId: '', label: 'good', defectType: null });
+    // 저장된 에피소드 목록. 행을 그대로 v-model 로 편집하고 SAVE 시 서버로 보낸다.
+    const episodes = ref([]);
     const busy = reactive({
       ports: false, test: false, record: false, teleop: false, home: false,
-      train: false, objects: false, recon: false,
+      train: false, objects: false, recon: false, conveyor: false, episodes: false,
     });
     const toasts = ref([]);
 
@@ -91,15 +115,23 @@ createApp({
     });
     let viewerInstance = null;   // Three.js 뷰어 핸들 (reactive 밖 — 프록시로 감싸면 안 됨)
 
-    /* MJPEG 스트림 URL 은 한 번 정하면 바꾸지 않는다.
-       reactive 값으로 만들면 렌더링마다 src 가 갱신돼 연결이 끊겼다 붙길 반복한다. */
-    const streamUrls = reactive({});
-
     /* ---------------- 파생 값 ---------------- */
     const recording = computed(() => status.recording.state === 'RECORDING');
     const connectedCount = computed(() => ports.connected_count);
     const totalCount = computed(() => ports.total_count);
     const allConnected = computed(() => ports.connected_count === ports.total_count && ports.total_count > 0);
+
+    /* 수집 현황은 에피소드 목록에서 파생시킨다. 서버가 매 폴링(녹화 중 0.5초)마다
+       데이터셋 폴더를 glob 하면 에피소드가 쌓일수록 느려지는데, 이 숫자들은
+       녹화 시작/종료/삭제 때만 바뀐다 — 즉 목록을 다시 받는 바로 그 시점이다. */
+    // CAD 기준 모델과 스캔 재구성은 보여줄 지표가 다르다.
+    const isCadModel = computed(() => scan.stats?.source === 'cad_stl');
+
+    const objectCounts = computed(() => {
+      const seen = { good: new Set(), defect: new Set() };
+      episodes.value.forEach((ep) => seen[ep.label]?.add(ep.object_id));
+      return { good: seen.good.size, defect: seen.defect.size };
+    });
 
     const canStart = computed(() => {
       if (!form.episodeId.trim() || !form.objectId.trim()) return false;
@@ -107,8 +139,16 @@ createApp({
       return true;
     });
 
+    /* 스트림 URL 은 카메라 이름만으로 정해지는 상수 문자열이라 여기서 바로 만든다.
+       별도 reactive 맵에 담아뒀더니, 맵이 채워지는 시점이 status.cameras 보다 늦어
+       첫 렌더에서 streamUrl 이 undefined 로 굳고 <img> 에 src 가 아예 안 붙었다
+       (증상: Network 탭에 /api/stream 요청이 0건, 프리뷰가 빈 화면).
+       매 렌더 같은 문자열이 나오므로 Vue 가 src 를 다시 쓰지 않아 재연결도 없다. */
     const cameraViews = computed(() =>
-      status.cameras.map((cam) => ({ ...cam, streamUrl: streamUrls[cam.name] }))
+      status.cameras.map((cam) => ({
+        ...cam,
+        streamUrl: `/api/stream/${cam.name}?fps=12&q=70`,
+      }))
     );
 
     /* ---------------- 토스트 ---------------- */
@@ -159,17 +199,6 @@ createApp({
       ports.connected_count = data.connected_count;
       ports.total_count = data.total_count;
       meta.simulate = data.simulate;
-      ensureStreamUrls(data.cameras);
-    }
-
-    function ensureStreamUrls(cameras) {
-      cameras.forEach((cam) => {
-        if (!streamUrls[cam.name]) {
-          // 프리뷰는 12fps 로 충분하다. 브라우저의 호스트당 동시 연결 제한(6)을
-          // 5개 스트림이 잡아먹으므로 대역폭과 연결 시간을 아낀다.
-          streamUrls[cam.name] = `/api/stream/${cam.name}?fps=12&q=70`;
-        }
-      });
     }
 
     async function testConnections() {
@@ -231,6 +260,70 @@ createApp({
       }
     }
 
+    const conveyorLabel = computed(() => {
+      if (!conveyor.connected) return 'PORT CLOSED';
+      if (!conveyor.enabled) return 'DISABLED';
+      if (!conveyor.running) return 'IDLE';
+      return `${Number(conveyor.rpm || 0).toFixed(1)} RPM`;
+    });
+
+    function applyConveyor(data) {
+      if (!data) return;
+      ['connected', 'running', 'enabled', 'dir', 'rpm', 'target_rpm'].forEach((key) => {
+        if (data[key] !== undefined) conveyor[key] = data[key];
+      });
+      // 서버가 아는 목표 속도로 입력칸을 맞춘다(다른 탭이나 시리얼 콘솔에서 바꿨을 수 있다).
+      if (data.target_rpm) conveyorRpm.value = Math.round(data.target_rpm * 100) / 100;
+    }
+
+    async function conveyorCall(fn, message) {
+      busy.conveyor = true;
+      try {
+        applyConveyor(await fn());
+        if (message) notify(message);
+      } catch (err) {
+        notify(err.message, 'error');
+      } finally {
+        busy.conveyor = false;
+      }
+    }
+
+    async function startConveyor() {
+      // 화면의 RPM 을 먼저 반영하고 출발한다. 버튼만 눌러 이전 속도로 도는 것보다
+      // 눈에 보이는 값과 실제가 같은 편이 안전하다.
+      await conveyorCall(async () => {
+        await api.post('/api/conveyor/speed', { rpm: conveyorRpm.value });
+        return api.post('/api/conveyor/start');
+      }, `컨베이어 시작 — ${conveyorRpm.value} RPM`);
+    }
+
+    async function stopConveyor() {
+      await conveyorCall(() => api.post('/api/conveyor/stop'), '컨베이어 정지');
+    }
+
+    async function setConveyorSpeed() {
+      await conveyorCall(
+        () => api.post('/api/conveyor/speed', { rpm: conveyorRpm.value }),
+        `목표 속도 ${conveyorRpm.value} RPM`,
+      );
+    }
+
+    async function toggleConveyorDir() {
+      // 구동 중이면 펌웨어가 잠깐 멈춘 뒤 저속에서 다시 가속한다(부하 상태 즉시 반전 = 탈조).
+      const next = conveyor.dir === 'ccw' ? 'cw' : 'ccw';
+      await conveyorCall(
+        () => api.post('/api/conveyor/dir', { direction: next }),
+        next === 'cw' ? '정방향으로 전환' : '역방향으로 전환',
+      );
+    }
+
+    async function releaseConveyor() {
+      await conveyorCall(
+        () => api.post('/api/conveyor/release'),
+        'COM 포트 해제 — 이제 펌웨어를 업로드할 수 있습니다',
+      );
+    }
+
     function setLabel(value) {
       form.label = value;
       // GOOD 으로 되돌릴 때 defectType 을 반드시 지운다.
@@ -265,10 +358,61 @@ createApp({
         // 다음 에피소드 ID 를 자동 증가시켜 연속 수집의 마찰을 없앤다.
         const next = await api.get('/api/meta');
         form.episodeId = next.next_episode_id;
+        refreshEpisodes();
       } catch (err) {
         notify(err.message, 'error');
       } finally {
         busy.record = false;
+      }
+    }
+
+    /* ==================== 에피소드 관리 ====================
+       라벨은 사람이 눈으로 붙이므로 반드시 틀린다. 폴더를 손으로 옮기면
+       metadata.json 과 분류 폴더가 어긋나므로 서버 경로로만 고친다. */
+    async function refreshEpisodes() {
+      busy.episodes = true;
+      try {
+        const data = await api.get('/api/episodes');
+        episodes.value = data.episodes.reverse();   // 최근 것부터
+      } catch (err) {
+        notify(err.message, 'error');
+      } finally {
+        busy.episodes = false;
+      }
+    }
+
+    async function saveEpisode(ep) {
+      busy.episodes = true;
+      try {
+        await api.patch(`/api/episodes/${ep.episode_id}`, {
+          object_id: ep.object_id,
+          label: ep.label,
+          defect_type: ep.label === 'defect' ? ep.defect_type : null,
+        });
+        notify(`에피소드 ${ep.episode_id} 수정 완료`);
+        await refreshEpisodes();
+        await refreshObjects();   // 분류 폴더가 옮겨졌으므로 3D 목록도 갱신
+      } catch (err) {
+        notify(err.message, 'error');
+        await refreshEpisodes();  // 실패 시 화면을 서버 상태로 되돌린다
+      } finally {
+        busy.episodes = false;
+      }
+    }
+
+    async function deleteEpisode(ep) {
+      if (!window.confirm(
+        `에피소드 ${ep.episode_id} (${ep.object_id}) 를 삭제합니다.\n프레임 ${ep.num_frames}장이 영구히 사라집니다.`
+      )) return;
+      busy.episodes = true;
+      try {
+        await api.del(`/api/episodes/${ep.episode_id}`);
+        notify(`에피소드 ${ep.episode_id} 삭제됨`);
+        await refreshEpisodes();
+      } catch (err) {
+        notify(err.message, 'error');
+      } finally {
+        busy.episodes = false;
       }
     }
 
@@ -289,7 +433,6 @@ createApp({
           teleop: data.teleop,
           cameras: data.cameras,
         });
-        ensureStreamUrls(data.cameras);
       } catch {
         // 폴링 실패는 토스트를 띄우지 않는다. 서버 재시작 중에 화면이 알림으로 덮인다.
       }
@@ -299,6 +442,11 @@ createApp({
     async function pollPorts() {
       try {
         applyPorts(await api.get('/api/ports'));
+      } catch { /* 무시 */ }
+      // 컨베이어 상태는 포트를 열지 않고 읽는다(release 한 포트를 폴링이 다시 잡으면
+      // ESP32 가 리셋돼 돌던 모터가 멈춘다). 서버 쪽에서 보장한다.
+      try {
+        applyConveyor(await api.get('/api/conveyor/status'));
       } catch { /* 무시 */ }
       portsTimer = setTimeout(pollPorts, 5000);
     }
@@ -456,13 +604,82 @@ createApp({
       const [label, objectId] = scan.selectedKey.split('/');
       busy.recon = true;
       try {
+        // CAD 기준 모델이 있으면 그걸 쓴다. 스캔으로 형상을 만드는 것보다
+        // 설계 형상이 정확하다 — 5뷰 visual hull 은 오목부를 복원하지 못한다.
+        try {
+          const cad = await api.get(`/api/scan/model/${objectId}?label=${label}`);
+          applyMesh(cad.mesh, `${objectId} · CAD 기준 모델`);
+          const s = cad.mesh.stats;
+          if (s.comparison_skipped) {
+            // 정합 실패를 조용히 넘기면 "불량 없음" 으로 오해한다. 색이 안 뜬 이유를 말한다.
+            notify(s.comparison_skipped, 'error');
+          } else if (s.flagged_ratio > 0) {
+            notify(`CAD 대비 차이 ${(s.flagged_ratio * 100).toFixed(1)}% `
+                   + `(정합 일치도 ${s.alignment_score}) — 주황색이 설계와 다른 부위입니다`);
+          } else {
+            notify(`CAD 모델 로드 — ${s.file} `
+                   + `(${s.size_mm.map((v) => v.toFixed(1)).join(' × ')} mm)`);
+          }
+          return;
+        } catch {
+          // 기준 모델이 없으면 스캔 재구성으로 넘어간다.
+        }
+
         const data = await api.post('/api/scan/reconstruct', {
           object_id: objectId,
           label,
-          resolution: 48,
+          // 서버 상한값. 복셀이 잘아져 계단이 덜 보인다.
+          // 대가는 전송량 — 정점 5.6만개에 JSON 5MB 다(실측). 로컬이라 감당되지만
+          // 원격에서 쓰게 되면 낮추거나 바이너리 포맷으로 바꿔야 한다.
+          resolution: 96,
         });
         applyMesh(data.mesh, `${objectId} · ${label.toUpperCase()}`);
         notify(`3D 재구성 완료 — ${data.mesh.stats.num_vertices} vertices`);
+      } catch (err) {
+        notify(err.message, 'error');
+      } finally {
+        busy.recon = false;
+      }
+    }
+
+    /* 기준 CAD 모델 업로드. 선택된 물체의 object_id 로 저장된다. */
+    const modelInput = ref(null);
+
+    function pickModelFile() {
+      if (!scan.selectedKey) {
+        notify('먼저 OBJECT 를 선택하세요. 그 물체의 기준 모델로 등록됩니다.', 'error');
+        return;
+      }
+      modelInput.value?.click();
+    }
+
+    async function uploadModel(event) {
+      const file = event.target.files?.[0];
+      event.target.value = '';          // 같은 파일을 다시 골라도 change 가 뜨게
+      if (!file || !scan.selectedKey) return;
+
+      const objectId = scan.selectedKey.split('/')[1];
+      busy.recon = true;
+      try {
+        const d = await api.upload(`/api/scan/model/${objectId}`, file);
+        notify(`${objectId} 기준 모델 등록 — ${d.file} `
+               + `(면 ${d.num_faces}개, ${d.size_mm.map((v) => v.toFixed(1)).join(' × ')} mm)`);
+        await reconstruct();            // 바로 띄워서 확인시킨다
+      } catch (err) {
+        notify(err.message, 'error');
+      } finally {
+        busy.recon = false;
+      }
+    }
+
+    async function captureBackground() {
+      if (!window.confirm(
+        '스캔대에서 물체를 모두 치운 뒤 확인을 누르세요.\n지금 보이는 화면을 "빈 배경"으로 저장합니다.'
+      )) return;
+      busy.recon = true;
+      try {
+        const data = await api.post('/api/scan/background');
+        notify(`배경 저장 완료 — ${data.cameras.join(', ')} (${data.cameras.length}대)`);
       } catch (err) {
         notify(err.message, 'error');
       } finally {
@@ -527,6 +744,7 @@ createApp({
       await loadMeta();
       await pollPorts();
       await pollStatus();
+      await refreshEpisodes();
       await refreshObjects();
       // 페이지 재진입 시 이미 학습이 돌고 있을 수 있으니 상태를 한 번 확인.
       try {
@@ -550,13 +768,18 @@ createApp({
 
     return {
       ports, status, meta, form, busy, toasts,
-      recording, connectedCount, totalCount, allConnected, canStart, cameraViews,
+      recording, connectedCount, totalCount, allConnected, canStart, cameraViews, objectCounts,
       refreshPorts, testConnections, identify, toggleTeleop, goHome,
+      conveyor, conveyorRpm, conveyorLabel, startConveyor, stopConveyor,
+      setConveyorSpeed, toggleConveyorDir, releaseConveyor,
       setLabel, startRecording, stopRecording, dismiss, fmtDeg,
+      // 에피소드 관리
+      episodes, refreshEpisodes, saveEpisode, deleteEpisode,
       // ACT 학습 메트릭
       training, lossChart, successChart, startTraining, stopTraining, fmtNum, fmtPct,
       // 3D 스캔 검사
       scan, viewerCanvas, refreshObjects, reconstruct, reconstructDemo, resetView,
+      captureBackground, modelInput, pickModelFile, uploadModel, isCadModel,
     };
   },
 }).mount('#app');

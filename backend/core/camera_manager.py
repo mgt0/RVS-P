@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import deque
@@ -24,6 +25,60 @@ import numpy as np
 
 from ..config import CameraConfig
 from ..utils.errors import CameraUnavailableError, UnknownCameraError
+
+logger = logging.getLogger(__name__)
+
+
+def init_com() -> None:
+    """스레드마다 한 번 COM 을 초기화한다.
+
+    DirectShow 는 COM 위에 올라가 있어서, 초기화하지 않은 스레드에서는
+    장치 열거가 CoInitialize 오류로 죽고 OpenCV 의 DSHOW 캡처도
+    "backend is generally available but can't be used to capture by index" 로
+    실패한다(둘 다 실측). 메인 스레드는 comtypes 임포트가 대신 해주기 때문에
+    스크립트에서는 멀쩡하다가 서버의 워커 스레드에서만 터진다.
+
+    같은 스레드에서 여러 번 불러도 안전하다(참조 카운트만 증가).
+    """
+    try:
+        import comtypes
+    except ImportError:
+        return
+    try:
+        comtypes.CoInitialize()
+    except OSError:
+        logger.debug("CoInitialize 실패 — 이미 다른 모드로 초기화된 스레드일 수 있습니다")
+
+
+def list_device_names() -> list[str]:
+    """DirectShow 가 보고하는 카메라 이름 목록(열거 순서 = DSHOW 인덱스).
+
+    pygrabber 가 없거나 Windows 가 아니면 빈 목록 — 호출부가 인덱스 방식으로
+    되돌아간다. 이름 매칭이 안 된다고 서버가 못 뜨면 안 된다.
+    """
+    try:
+        from pygrabber.dshow_graph import FilterGraph
+    except ImportError:
+        logger.warning("pygrabber 가 없어 이름 매칭을 쓸 수 없습니다: pip install pygrabber")
+        return []
+    try:
+        return list(FilterGraph().get_input_devices())
+    except Exception:  # noqa: BLE001 — COM 초기화 실패 등
+        logger.exception("DirectShow 장치 열거 실패")
+        return []
+
+
+def resolve_device(match_name: str, nth: int) -> int | None:
+    """이름이 match_name 을 포함하는 장치 중 nth 번째의 DirectShow 인덱스.
+
+    부분 일치를 쓰는 이유: 드라이버가 이름 뒤에 접미사를 붙이는 경우가 있어
+    완전 일치는 잘 깨진다. 대소문자는 무시한다.
+    """
+    needle = match_name.lower()
+    matches = [i for i, n in enumerate(list_device_names()) if needle in n.lower()]
+    if nth < len(matches):
+        return matches[nth]
+    return None
 
 
 @dataclass(frozen=True)
@@ -40,6 +95,10 @@ class _CameraWorker(threading.Thread):
 
     RECONNECT_BACKOFF_SEC = 2.0
 
+    # 이 시간 이상 새 프레임이 없으면 '굳었다'고 본다. 30fps 기준 정상 간격은 33ms 라
+    # 3초는 일시적 지연을 오진하지 않으면서 영구 정지는 확실히 잡는 값.
+    STALL_SEC = 3.0
+
     # 링버퍼 길이. 공통 기준시각에서 최대 ±(N/2 / fps) 초까지 되짚을 수 있다.
     # 8프레임 @30fps ≈ ±133ms 로, 카메라 간 위상차를 흡수하기에 충분하다.
     BUFFER_SIZE = 8
@@ -55,33 +114,89 @@ class _CameraWorker(threading.Thread):
         self._new_frame = threading.Condition(self._lock)
         self._stop_event = threading.Event()
         self._frame_index = 0
-        self._fps_ema = 0.0
         self._last_ts = 0.0
         self._error: str | None = None
+        self._truncated_count = 0   # 대역폭 부족으로 버린 프레임 수(진단용)
 
     # ---------- 라이프사이클 ----------
     def _open(self) -> bool:
         if self._simulate:
             self._error = None
             return True
-        cap = cv2.VideoCapture(self.cfg.device)
+        # 백엔드 선택은 '무엇으로 카메라를 지목했는가'가 결정한다.
+        #
+        # match_name 을 쓰면 반드시 CAP_DSHOW 다. 이름의 출처가 DirectShow 열거이고,
+        # MSMF 는 열거 순서가 다르기 때문이다(실측: DSHOW 0=ACER 내장캠, MSMF 1=ACER).
+        # 이름으로 찾은 인덱스를 MSMF 로 열면 엉뚱한 카메라가 잡힌다.
+        #
+        # 인덱스로 지목하면 기본값(Windows=MSMF)을 쓴다.
+        # (예전 주석은 "DSHOW 가 이 Arducam 들과 MJPG 협상에 실패한다"고 단정했는데
+        #  사실이 아니었다. 아래 프로퍼티 설정 순서가 원인이었고, 순서를 고치면
+        #  DSHOW 도 MJPG 로 붙는다 — 실측.)
+        #
+        # params 형태 생성자(VideoCapture(dev, backend, [PROP_..._TIMEOUT_MSEC, ...])) 는
+        # 쓰지 않는다. 이 환경에서 5대 전부 isOpened()=False 가 된다(측정).
+        # read 타임아웃은 MSMF 가 지원하지 않으므로(cap.set → False, get → -1)
+        # 굳은 read 는 CameraManager 의 감시 스레드가 force_reopen() 으로 풀어준다.
+        if self.cfg.match_name:
+            index = resolve_device(self.cfg.match_name, self.cfg.nth)
+            if index is None:
+                self._error = (
+                    f"'{self.cfg.match_name}' 이름의 카메라 {self.cfg.nth + 1}번째를 찾지 못했습니다. "
+                    f"연결된 장치: {', '.join(list_device_names()) or '없음'}"
+                )
+                return False
+            cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+            target = f"{self.cfg.match_name}#{self.cfg.nth} (dshow {index})"
+        else:
+            cap = cv2.VideoCapture(self.cfg.device)
+            target = f"device {self.cfg.device}"
+
         if not cap.isOpened():
-            self._error = f"device {self.cfg.device} open 실패"
+            self._error = f"{target} open 실패"
             cap.release()
             return False
 
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self.cfg.fourcc))
+        # FOURCC 는 반드시 '맨 마지막'에 설정한다. 해상도나 FPS 를 FOURCC 뒤에 쓰면
+        # DSHOW 가 포맷 협상을 다시 하면서 YUY2(무압축, 640x480@30 = 147Mbps)로
+        # 되돌린다. 그러면 USB 2.0(480Mbps)에 1대밖에 못 들어가 나머지는 open 실패.
+        #
+        # 실측(Arducam 1080P Low Light ×5, 동시 개방):
+        #   fourcc → 해상도        : YUY2   1/5 대
+        #   해상도 → fourcc → fps  : YUY2   1/5 대
+        #   해상도 → fps → fourcc  : MJPG   3/5 대
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg.width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg.height)
         cap.set(cv2.CAP_PROP_FPS, self.cfg.fps)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self.cfg.fourcc))
         # 지연 누적 방지. 일부 백엔드는 무시하므로 성공 여부를 신뢰하지 않는다.
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        if self.cfg.exposure is not None:
+            # 자동 노출을 먼저 끄지 않으면 수동 값이 곧바로 덮어써진다.
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)   # 0.25 = manual (MSMF/DSHOW 공통)
+            cap.set(cv2.CAP_PROP_EXPOSURE, self.cfg.exposure)
+
+        if self.cfg.lock_white_balance:
+            # 자동 화이트밸런스를 끈다.
+            #
+            # 배경 차분은 '배경을 찍을 때와 물체를 찍을 때의 카메라가 같다'는 전제로
+            # 동작한다. 자동 WB 는 화면에 물체가 들어오면 색온도를 다시 잡으므로
+            # 그 전제가 깨지고, 배경과 촬영본의 색조가 통째로 달라져 화면 전체가
+            # '배경과 다른 곳'이 된다(실측: 그래서 실루엣이 54~80% 로 번졌다).
+            # 노출 고정만으로는 부족하고 WB 도 같이 잠가야 배경 참조가 오래간다.
+            cap.set(cv2.CAP_PROP_AUTO_WB, 0)
+            if self.cfg.white_balance is not None:
+                cap.set(cv2.CAP_PROP_WB_TEMPERATURE, self.cfg.white_balance)
 
         self._cap = cap
         self._error = None
         return True
 
     def run(self) -> None:
+        if self.cfg.match_name and not self._simulate:
+            init_com()   # 이 스레드에서 DirectShow 를 쓸 것이므로 반드시 먼저
+
         while not self._stop_event.is_set():
             if self._cap is None and not self._simulate:
                 if not self._open():
@@ -89,14 +204,43 @@ class _CameraWorker(threading.Thread):
                     self._stop_event.wait(self.RECONNECT_BACKOFF_SEC)
                     continue
 
+            cycle_started = time.monotonic()
+
             ok, image = self._read_once()
             if not ok:
                 self._release()
                 self._stop_event.wait(self.RECONNECT_BACKOFF_SEC)
                 continue
 
+            if not self._simulate and self._is_truncated(image):
+                # 버리고 다음 프레임을 기다린다. 검은 줄이 남은 프레임을 그대로
+                # 내보내면 프리뷰도 학습 데이터도 같이 오염된다.
+                self._truncated_count += 1
+                continue
+
+            if self.cfg.vflip:
+                # 캡처 직후 한 번만 뒤집는다. 프리뷰에서만 뒤집으면 저장된 학습
+                # 데이터는 거꾸로 남아, 눈으로는 멀쩡한데 모델만 이상해진다.
+                image = cv2.flip(image, 0)
+
             now = time.monotonic()
             self._publish(image, now)
+
+            # 다음 '공통 격자 시각'까지 쉰다. 페이싱이 없으면 read() 가 즉시 같은
+            # 프레임을 돌려주는 드라이버(측정: MSMF + Arducam 다중 연결)에서 루프가
+            # 초당 수만 회 돌며 USB·CPU 를 독점해 다른 카메라가 굶는다.
+            #
+            # 카메라마다 독립적으로 period 만큼 쉬면 read 시점이 제각각 흩어져
+            # 카메라 간 skew 가 한 주기 가까이(측정: 15fps 에서 63ms) 벌어진다.
+            # 절대 격자에 맞춰 깨우면 5대의 read 가 같은 순간에 모여 skew 가 줄어든다.
+            # (시뮬레이션 경로의 합성 프레임도 같은 이유로 같은 방식을 쓴다)
+            #
+            # 격자 기준은 read 이전 시각(cycle_started)이다. read 이후 시각으로 잡으면
+            # read 가 한 주기를 통째로 소비한 경우 방금 지나간 격자점 다음을 기다리게 돼
+            # 실효 fps 가 절반으로 떨어진다(측정: 15 → 7.5).
+            period = 1.0 / max(self.cfg.fps, 1)
+            target = (cycle_started // period + 1) * period
+            self._stop_event.wait(max(0.0, target - time.monotonic()))
 
         self._release()
 
@@ -117,6 +261,20 @@ class _CameraWorker(threading.Thread):
             return False, None
         return True, image
 
+    def _is_truncated(self, image: np.ndarray) -> bool:
+        """잘려서 도착한 MJPEG 프레임인지 판정한다.
+
+        USB 대역폭이 모자라면 프레임이 중간에 끊긴 채 들어오고, OpenCV 는 그걸
+        예외 없이 디코딩해 남은 아래쪽을 단색(주로 검정/회색)으로 채운다.
+        화면에서는 '검은 줄'로 보이고, 그대로 저장하면 학습 데이터에 섞인다.
+
+        판정: 아래 8줄이 '완전히' 균일한가. 실제 장면은 센서 노이즈 때문에
+        픽셀 값이 미세하게라도 흔들리므로 완전 균일은 사실상 나오지 않는다.
+        (임계값 대신 완전 일치를 보는 이유 = 정상 프레임을 버리지 않기 위해)
+        """
+        band = image[-8:]
+        return bool(band.size) and bool((band == band.flat[0]).all())
+
     def _synthetic_frame(self) -> np.ndarray:
         img = np.zeros((self.cfg.height, self.cfg.width, 3), dtype=np.uint8)
         img[:] = (26, 28, 32)  # 대시보드 canvas-soft 와 같은 톤
@@ -134,10 +292,6 @@ class _CameraWorker(threading.Thread):
             frame = Frame(image=image, timestamp=ts, index=self._frame_index)
             self._latest = frame
             self._buffer.append(frame)
-            if self._last_ts:
-                inst = 1.0 / max(ts - self._last_ts, 1e-6)
-                # EMA(α=0.1): 순간 fps 는 요동이 심해 UI 숫자가 읽히지 않는다.
-                self._fps_ema = inst if self._fps_ema == 0 else self._fps_ema * 0.9 + inst * 0.1
             self._last_ts = ts
             self._new_frame.notify_all()
 
@@ -148,6 +302,24 @@ class _CameraWorker(threading.Thread):
 
     def stop(self) -> None:
         self._stop_event.set()
+
+    def stalled(self) -> bool:
+        """새 프레임이 STALL_SEC 이상 없으면 True. _last_ts=0 은 아직 첫 프레임 전이라 제외."""
+        if self._simulate or self._cap is None or not self._last_ts:
+            return False
+        return (time.monotonic() - self._last_ts) > self.STALL_SEC
+
+    def force_reopen(self) -> None:
+        """감시 스레드에서 호출. 굳은 cap 을 닫아 블로킹된 read() 를 풀어준다.
+
+        MSMF 의 read() 에는 타임아웃이 없어서, 카메라가 멈추면 캡처 스레드가 read()
+        안에서 영구히 멈춘다(자기 자신은 아무것도 못 한다). 밖에서 cap 을 닫아주면
+        read() 가 False 로 빠져나오고 run() 의 기존 재연결 경로가 복구를 이어받는다.
+        """
+        cap, self._cap = self._cap, None
+        self._last_ts = 0.0     # 재오픈 직후 다시 stalled 로 오진되지 않게 초기화
+        if cap is not None:
+            cap.release()
 
     # ---------- 조회 ----------
     def latest(self) -> Frame | None:
@@ -178,7 +350,20 @@ class _CameraWorker(threading.Thread):
 
     @property
     def fps(self) -> float:
-        return round(self._fps_ema, 1)
+        """링버퍼에 실제로 쌓인 프레임 간격으로 계산한다.
+
+        이전 구현은 `1/max(ts - last_ts, 1e-6)` 의 EMA 였는데, 간격이 0 에 가까운
+        프레임이 한 번 끼면 순간값이 100만까지 튀어 EMA 가 수만으로 오염됐다.
+        (실측 26fps 인 카메라가 80000, 136475 로 표시돼 진단을 계속 오도했다)
+        버퍼 구간 평균은 그런 폭주가 원리적으로 불가능하다.
+        """
+        with self._lock:
+            if len(self._buffer) < 2:
+                return 0.0
+            span = self._buffer[-1].timestamp - self._buffer[0].timestamp
+            if span <= 0:
+                return 0.0
+            return round((len(self._buffer) - 1) / span, 1)
 
     @property
     def healthy(self) -> bool:
@@ -188,10 +373,13 @@ class _CameraWorker(threading.Thread):
     def status(self) -> dict:
         return {
             "name": self.cfg.name,
-            "device": str(self.cfg.device),
+            "device": f"{self.cfg.match_name}#{self.cfg.nth}" if self.cfg.match_name
+                      else str(self.cfg.device),
             "resolution": self.cfg.resolution,
             "target_fps": self.cfg.fps,
             "fps": self.fps,
+            # 0 이 아니면 대역폭이 모자란다는 뜻 — 해상도/fps 를 낮추거나 USB 를 분산할 것
+            "truncated": self._truncated_count,
             "connected": self.healthy,
             "error": None if self.healthy else (self._error or "프레임 수신 없음"),
         }
@@ -205,15 +393,38 @@ class CameraManager:
             name: _CameraWorker(cfg, simulate=simulate) for name, cfg in cameras.items()
         }
         self._started = False
+        self._watchdog_stop = threading.Event()
+        self._watchdog: threading.Thread | None = None
 
     def start(self) -> None:
         if self._started:
             return
         for worker in self._workers.values():
             worker.start()
+        self._watchdog_stop.clear()
+        self._watchdog = threading.Thread(target=self._watch_loop, name="cam-watchdog", daemon=True)
+        self._watchdog.start()
         self._started = True
 
+    def _watch_loop(self) -> None:
+        """굳은 카메라를 찾아 강제 재연결시킨다.
+
+        카메라 한 대가 read() 안에서 멈추면 그 스레드는 스스로 빠져나올 수 없으므로
+        (MSMF 에 read 타임아웃이 없다) 밖에서 깨워줄 주체가 반드시 하나 필요하다.
+        이게 없으면 멈춘 카메라가 영구히 죽은 채 남는다.
+        """
+        while not self._watchdog_stop.is_set():
+            self._watchdog_stop.wait(1.0)
+            for worker in self._workers.values():
+                if worker.stalled():
+                    logger.warning("카메라 %s 정지 감지 — 강제 재연결", worker.cfg.name)
+                    worker.force_reopen()
+
     def stop(self) -> None:
+        self._watchdog_stop.set()
+        if self._watchdog:
+            self._watchdog.join(timeout=2.0)
+            self._watchdog = None
         for worker in self._workers.values():
             worker.stop()
         for worker in self._workers.values():

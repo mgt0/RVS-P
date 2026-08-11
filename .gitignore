@@ -4,11 +4,21 @@ __pycache__/
 venv/
 .pytest_cache/
 .DS_Store
+.claude/
+.vscode/
 
 # 수집된 데이터는 버전관리 대상이 아니다 (용량 + 바이너리)
 lerobot_data/episodes/
 lerobot_data/classification/
 
-# lerobot 연동(신규)으로 생기는 대용량 산출물 — 전부 로컬 재생성 가능하므로 커밋 안 함
-lerobot_data/lerobot_datasets/   # convert_episodes_to_dataset() 결과 (mp4 + parquet)
-lerobot_data/checkpoints/        # 학습된 ACT 정책 가중치
+# 카메라 식별 썸네일 등 임시 산출물
+scratch/
+
+# 학습 체크포인트 (lerobot-train 산출물 + rollout이 읽는 체크포인트, 어느 경로든 포함)
+checkpoints/
+
+# CAD 기준 모델은 각자 넣는다(용량 + 바이너리)
+lerobot_data/models/
+
+# 배경 참조 이미지는 리그·조명마다 다르다(코드가 아니라 현장 데이터)
+lerobot_data/background/

@@ -19,7 +19,7 @@ arms:
     baudrate: 1000000
     # `udevadm info -a -n /dev/ttyACM0 | grep serial` 로 확인
     serial_number: null
-    port_hint: COM10
+    port_hint: com6
     joint_ids: [1, 2, 3, 4, 5]
     home_position: [0.0, -90.0, 90.0, 0.0, 0.0]
 
@@ -27,7 +27,7 @@ arms:
     model: OMX-F
     baudrate: 1000000
     serial_number: null 
-    port_hint: COM7
+    port_hint: COM8
     joint_ids: [11, 12, 13, 14, 15, 16]
     home_position: [0.0, -90.0, 90.0, 0.0, 0.0]
 
@@ -45,19 +45,68 @@ safety:
   watchdog_timeout_ms: 500
 
 cameras:
-  # device 는 /dev/v4l/by-id/... 경로를 권장합니다.
-  # 정수 인덱스(0,1,2…)는 USB 열거 순서에 따라 바뀝니다.
-  front: { device: 0, width: 640, height: 480, fps: 30, fourcc: MJPG }
-  back:  { device: 1, width: 640, height: 480, fps: 30, fourcc: MJPG }
-  left:  { device: 2, width: 640, height: 480, fps: 30, fourcc: MJPG }
-  right: { device: 3, width: 640, height: 480, fps: 30, fourcc: MJPG }
-  top:   { device: 4, width: 640, height: 480, fps: 30, fourcc: MJPG }
-  global: { device: 5, width: 640, height: 480, fps: 30, fourcc: MJPG }
+  # match_name 으로 지목한다. 정수 인덱스는 USB 를 다시 꽂거나 재부팅하면 밀리지만
+  # 장치 이름은 그대로다(arm 의 serial_number 와 같은 역할).
+  # 이름이 같은 장치가 여러 대이므로 nth 로 몇 번째인지 고른다(0-based, DirectShow 순서).
+  #
+  # 내장캠(ACER FHD / ACER IR)은 이름이 'Arducam' 이 아니므로 어떤 슬롯에도
+  # 배정되지 않는다 — 인덱스가 어떻게 밀리든 절대 잡히지 않는다.
+  #
+  # nth 와 실제 카메라의 대응은 `python scripts/find_cameras.py` 로 확인한다.
+  # 물리 배치(front/back/left/right/top)와 순서가 다르면 nth 값만 바꿔 맞춘다.
+  #
+  # fps 15 인 이유는 USB 대역폭이다. 5대 동시 개방 실측(MJPG, 640x480):
+  #   30fps → 3/5 대만 열림 (나머지는 open 단계에서 아이소크로너스 대역폭 예약 실패)
+  #   15fps → 5/5 대
+  # 30fps 로 되돌리려면 카메라를 서로 다른 USB 컨트롤러로 분산해야 한다.
+  # 지금은 5대가 허브 2개(+직결 1)에 몰려 있다.
+  #
+  # exposure: 가로 줄무늬(조명 플리커 밴딩)가 보이면 각 카메라에 추가한다.
+  #   MSMF 기준 log2 초 → -6 = 1/64초, -5 = 1/32초, -4 = 1/16초.
+  #   값을 키울수록(-4 방향) 밴딩이 줄지만 밝은 부분이 날아간다.
+  #   근본 해결은 DC 구동(무플리커) 조명. 노출 조정은 임시 완화책이다.
+  # nth 는 DirectShow 열거 순서상 몇 번째 Arducam 인지를 뜻한다.
+  # cam4/cam5 의 nth 가 4/3 인 것은 오타가 아니다 — 이전 RIGHT/TOP 슬롯에
+  # 들어오던 카메라가 서로 바뀌어 있어 여기서 맞바꿨다.
+  # vflip: 거꾸로 매달린 카메라를 상하 반전한다(프리뷰·녹화 모두 적용).
+  # view_dir: 3D 재구성용 '물체 → 카메라' 방향 [x, y, z].
+  #   +X 오른쪽, +Y 위, +Z 앞(정면). 크기는 무관하다(정규화한다).
+  #   실측: 이 값이 실제 배치와 다르면 형상이 물체와 전혀 다르게 나온다.
+  #
+  # 방위 a·고도 e 로부터: [sin(a)cos(e), sin(e), cos(a)cos(e)]
+  #   45°/45° → [0.5, 0.7071, 0.5]      45°/0°  → [0.7071, 0, 0.7071]
+  # 함정: 고도 45° 를 [1,1,1] 로 쓰면 실제로는 35.3° 다(정규화하면 y=1/√3).
+  #
+  # 각도를 바꿨을 때 좋아졌는지는 재구성 결과의 stats.view_dir_consistency 로 본다.
+  # 단, 그 값은 큰 오차만 잡아낸다 — 미세 조정의 근거로는 못 쓴다(합성 검증에서
+  # 20° 틀린 배치가 정답보다 높은 점수를 받았다). 실제 배치를 재는 게 가장 정확하다.
+  # lock_white_balance: 자동 화이트밸런스를 끈다. 배경 차분을 쓰려면 사실상 필수다.
+  #   자동 WB 는 화면에 물체가 들어오면 색온도를 다시 잡는데, 그러면 배경 참조와
+  #   촬영본의 색조가 통째로 달라져 화면 전체가 '배경과 다른 곳'이 된다.
+  #
+  # exposure 도 같이 고정해야 배경 참조가 오래간다. 값은 실측으로 정한다:
+  #   (대시보드를 끄고) python scripts/find_cameras.py --tune-exposure
+  #   출력된 값을 각 줄에 exposure: -5 처럼 추가한다.
+  cam1: { match_name: Arducam, nth: 0, vflip: true,  lock_white_balance: true, view_dir: [ 0.5,  0.7071, 0.5   ], width: 640, height: 480, fps: 15, fourcc: MJPG }  # 오른쪽 대각선 위 (방위 +45°, 고도 +45°)
+  cam2: { match_name: Arducam, nth: 1, vflip: true,  lock_white_balance: true, view_dir: [-0.5,  0.7071, 0.5   ], width: 640, height: 480, fps: 15, fourcc: MJPG }  # 왼쪽 대각선 위   (방위 -45°, 고도 +45°)
+  cam3: { match_name: Arducam, nth: 2, vflip: true,  lock_white_balance: true, view_dir: [-0.7071, 0.0,   0.7071], width: 640, height: 480, fps: 15, fourcc: MJPG }  # 왼쪽 대각선      (방위 -45°, 고도   0°)
+  cam4: { match_name: Arducam, nth: 4, vflip: false, lock_white_balance: true, view_dir: [ 0.7071, 0.0,   0.7071], width: 640, height: 480, fps: 15, fourcc: MJPG }  # 오른쪽 대각선    (방위 +45°, 고도   0°)
+  cam5: { match_name: Arducam, nth: 3, vflip: false, lock_white_balance: true, view_dir: [ 0.0,   -1.0,   0.0   ], width: 640, height: 480, fps: 15, fourcc: MJPG }  # 하단 뷰
+  # 실물 카메라가 5대뿐이라 글로벌 캠은 아직 없다. 6번째를 달면 enabled 를 지우고
+  # match_name/nth 를 채우면 된다.
+  global: { enabled: false }
 
 recording:
   root: ./lerobot_data
-  sample_rate_hz: 30
+  # 카메라보다 빠르게 샘플링하면 같은 프레임이 중복 저장되므로 카메라 fps 와 맞춘다.
+  # cameras.*.fps 를 30 으로 올린다면 여기도 30 으로 되돌릴 것.
+  sample_rate_hz: 15
   max_sync_skew_ms: 15.0
   jpeg_quality: 90
-  classification_capture_at: 0.5
   queue_maxsize: 512
+
+conveyor:
+  # ESP32(TB6600+NEMA17)가 USB로 꽂히는 COM 포트. 장치관리자에서 확인.
+  port: COM12
+  baudrate: 115200
+  timeout_sec: 2.0

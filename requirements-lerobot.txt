@@ -1,21 +1,20 @@
-# --- 모방학습(ACT) 실학습/rollout 전용 (신규, 선택 설치) ---
+# --- rollout(자율 실행) 전용, 선택 설치 ---
 #
-# 대시보드/텔레옵/녹화/3D스캔/컨베이어·게이트 작업만 하는 사람은 이 파일을
-# 설치할 필요가 없습니다 (requirements.txt만으로 서버가 정상 기동됩니다).
-# 이 파일은 "실제 LeRobot ACT 학습 + rollout"을 다루는 사람만 추가로 설치하세요.
+# torch는 requirements.txt에 이미 있습니다(CNN 분류용). 여기서는 lerobot
+# 패키지 자체만 추가로 설치합니다 — ACTPolicy.from_pretrained()로 학습된
+# 체크포인트를 불러와 실시간 추론(rollout)할 때만 필요합니다.
 #
 #   pip install -r requirements.txt -r requirements-lerobot.txt
 #
+# 데이터셋 변환은 scripts/to_lerobot.py, 학습은 `lerobot-train` CLI를 그대로
+# 씁니다(둘 다 별도 프로세스). 이 파일은 rollout 담당자만 설치하면 됩니다.
+#
 # Windows 설치 시 주의:
-#  - `pip install torch` 로 CPU-only 버전이 깔릴 수 있습니다. GPU(CUDA)가 있다면
-#    https://pytorch.org/get-started/locally/ 에서 본인 CUDA 버전에 맞는 인덱스 URL로
-#    먼저 torch를 설치한 뒤 lerobot을 설치하세요. (uv sync 사용 시에도 동일 이슈가
-#    보고돼 있습니다: huggingface/lerobot#4093)
-#  - 카메라가 인식되지 않으면(huggingface/lerobot#1456) config.yaml의 camera.device를
-#    정수 인덱스가 아니라 실제 경로/이름으로 명시해보세요.
+#  - 카메라가 인식되지 않으면(huggingface/lerobot#1456) config.yaml의 camera
+#    설정을 match_name(장치 이름)으로 지정해보세요 — requirements.txt의
+#    pygrabber가 그 매칭을 지원합니다.
 #  - 시리얼 포트 관련 오류가 나면(huggingface/lerobot#1094) COM 포트 표기를
-#    확인하세요. omx-factory-system 자체는 pyserial 기반으로 이미 검증됐으니,
-#    lerobot 쪽 설정에서 같은 포트 문자열을 그대로 쓰면 됩니다.
+#    확인하세요. omx-factory-system 자체 텔레옵이 이미 같은 포트로 동작
+#    중이라면 그 값 그대로 쓰면 됩니다.
 
-torch>=2.8          # Windows에서 TorchCodec(mp4 디코더) 지원을 위해 2.8 이상 권장
 lerobot>=0.5.0
