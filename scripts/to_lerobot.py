@@ -25,6 +25,17 @@ import json
 import sys
 from pathlib import Path
 
+# Windows 한정: cv2/pandas가 torch보다 먼저 로드되면 서로 다른 버전의 동명 런타임
+# DLL(OpenMP 계열)을 먼저 점유해버려서, 뒤에 import되는 torch의 DLL 초기화가
+# WinError 1114로 깨진다. torch를 아무것도 안 하고 먼저 import만 해두면(있으면)
+# 슬롯을 먼저 차지해서 이후 cv2/pandas/lerobot import가 전부 정상 동작한다.
+# torch가 아예 없는 환경이면 조용히 넘어가고, 아래 lerobot import 실패 시
+# 기존 안내 메시지(`lerobot 이 설치되어 있지 않습니다`)로 처리된다.
+try:
+    import torch  # noqa: F401
+except ImportError:
+    pass
+
 import cv2
 import numpy as np
 import pandas as pd

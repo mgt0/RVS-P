@@ -17,4 +17,4 @@
 #    확인하세요. omx-factory-system 자체 텔레옵이 이미 같은 포트로 동작
 #    중이라면 그 값 그대로 쓰면 됩니다.
 
-lerobot>=0.5.0
+lerobot[dataset,training]>=0.5.0

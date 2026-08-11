@@ -17,17 +17,17 @@ arms:
   leader:
     model: OMX-L
     baudrate: 1000000
-    # `udevadm info -a -n /dev/ttyACM0 | grep serial` 로 확인
-    serial_number: null
-    port_hint: com6
+    # scripts/find_ports.py 로 확인 (이 PC 기준, 2026-08-11)
+    serial_number: 976882E7503059384C2E3120FF07103B
+    port_hint: COM5   # serial_number 매칭이 1순위라 재부팅으로 바뀌어도 안전
     joint_ids: [1, 2, 3, 4, 5]
     home_position: [0.0, -90.0, 90.0, 0.0, 0.0]
 
   follower:
     model: OMX-F
     baudrate: 1000000
-    serial_number: null 
-    port_hint: COM8
+    serial_number: 7646046C503059384C2E3120FF081821
+    port_hint: COM6
     joint_ids: [11, 12, 13, 14, 15, 16]
     home_position: [0.0, -90.0, 90.0, 0.0, 0.0]
 
@@ -92,9 +92,9 @@ cameras:
   cam3: { match_name: Arducam, nth: 2, vflip: true,  lock_white_balance: true, view_dir: [-0.7071, 0.0,   0.7071], width: 640, height: 480, fps: 15, fourcc: MJPG }  # 왼쪽 대각선      (방위 -45°, 고도   0°)
   cam4: { match_name: Arducam, nth: 4, vflip: false, lock_white_balance: true, view_dir: [ 0.7071, 0.0,   0.7071], width: 640, height: 480, fps: 15, fourcc: MJPG }  # 오른쪽 대각선    (방위 +45°, 고도   0°)
   cam5: { match_name: Arducam, nth: 3, vflip: false, lock_white_balance: true, view_dir: [ 0.0,   -1.0,   0.0   ], width: 640, height: 480, fps: 15, fourcc: MJPG }  # 하단 뷰
-  # 실물 카메라가 5대뿐이라 글로벌 캠은 아직 없다. 6번째를 달면 enabled 를 지우고
-  # match_name/nth 를 채우면 된다.
-  global: { enabled: false }
+  # Logitech C270 웹캠 (scripts/find_cameras.py 로 확인: "Logi C270 HD WebCam", dshow index 0)
+  # 3D 재구성용이 아니라 전체 장면 모니터링용이라 view_dir/lock_white_balance는 불필요.
+  global: { match_name: "Logi C270", nth: 0, width: 640, height: 480, fps: 15, fourcc: MJPG }
 
 recording:
   root: ./lerobot_data

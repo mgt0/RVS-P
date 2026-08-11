@@ -25,7 +25,9 @@ lerobot의 Python API는 버전마다 모듈 경로/시그니처가 바뀐다. �
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -98,28 +100,77 @@ class ActInferenceRunner:
         self._policy.to(self._device)
         self._policy.eval()
 
-        # 전/후처리기(정규화)도 같은 체크포인트 폴더에 저장돼 있다. 없어도 동작은
-        # 하지만(원본 값 그대로 씀) 학습 시 정규화했다면 결과가 어긋난다.
-        self._preprocessor = None
-        self._postprocessor = None
+        # 학습 시 관측 차원을 config.json에서 직접 읽는다 — 리더(팔로워보다 관절
+        # 수가 적을 수 있음, 그리퍼 등)와 팔로워의 관절 수가 다를 수 있고,
+        # scripts/to_lerobot.py는 leader_joint_* 기준(action)으로 차원을 정하기
+        # 때문에, 실제 팔로워에서 읽은 관절을 그대로 넘기면 개수가 안 맞을 수
+        # 있다(실측: follower 6축 vs 학습된 state 5차원 → RuntimeError).
+        # 여기서 잘라서 넘기고, 나머지 관절(그리퍼 등)은 그대로 유지된다
+        # (ArmController.write()가 짧은 리스트를 앞쪽 관절에만 적용하기 때문).
+        self._state_dim: int | None = None
+        self._expected_cameras: set[str] | None = None
         try:
-            from lerobot.processor import PolicyProcessorPipeline
-
-            self._preprocessor = PolicyProcessorPipeline.from_pretrained(
-                checkpoint_path, config_filename="preprocessor_config.json"
-            )
-            self._postprocessor = PolicyProcessorPipeline.from_pretrained(
-                checkpoint_path, config_filename="postprocessor_config.json"
+            cfg_path = Path(checkpoint_path) / "config.json"
+            cfg_json = json.loads(cfg_path.read_text(encoding="utf-8"))
+            input_features = cfg_json.get("input_features", {})
+            state_feature = input_features.get("observation.state")
+            if state_feature and state_feature.get("shape"):
+                self._state_dim = int(state_feature["shape"][0])
+            self._expected_cameras = {
+                key.removeprefix("observation.images.")
+                for key in input_features
+                if key.startswith("observation.images.")
+            } or None
+            logger.info(
+                "체크포인트 관측 스펙: state_dim=%s, cameras=%s",
+                self._state_dim, self._expected_cameras,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "전/후처리기 로드 실패 — 정규화 없이 원본 값으로 동작합니다 "
-                "(체크포인트 폴더에 preprocessor_config.json / postprocessor_config.json 확인). "
-                "오류: %s", exc,
+                "체크포인트 config.json에서 관측 스펙을 못 읽었습니다 — "
+                "관절 수/카메라가 안 맞으면 여기서 원인을 먼저 의심할 것. 오류: %s", exc,
+            )
+
+        # 전/후처리기(정규화)도 같은 체크포인트 폴더에 저장돼 있다. 없어도 동작은
+        # 하지만(원본 값 그대로 씀) 학습 시 정규화했다면 결과가 어긋난다.
+        #
+        # `PolicyProcessorPipeline.from_pretrained()`를 직접 두 번 부르면 실패한다 —
+        # 그 클래스의 to_transition 기본값이 batch_to_transition(딕셔너리 전용)으로
+        # 고정돼 있어서, 후처리기(액션=텐서를 받아야 함)에도 그게 그대로 적용돼
+        # "EnvTransition must be a dictionary. Got Tensor"가 난다(실측으로 확인).
+        # 공식 lerobot_eval.py가 쓰는 `make_pre_post_processors(pretrained_path=...)`
+        # 는 후처리기에 to_transition=policy_action_to_transition을 명시적으로
+        # 넣어줘서 이 문제가 없다 — 반드시 이 팩토리 함수를 통해서만 로드할 것.
+        self._preprocessor = None
+        self._postprocessor = None
+        try:
+            try:
+                from lerobot.policies import make_pre_post_processors
+            except ImportError:
+                from lerobot.common.policies.factory import make_pre_post_processors
+
+            self._preprocessor, self._postprocessor = make_pre_post_processors(
+                policy_cfg=self._policy.config,
+                pretrained_path=checkpoint_path,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "전/후처리기 로드 실패 — 정규화 없이 원본 값으로 동작합니다. 오류: %s", exc,
             )
 
         if hasattr(self._policy, "reset"):
             self._policy.reset()
+
+        # 공식 추론 경로(lerobot/common/control_utils.py의 predict_action)가 쓰는
+        # 헬퍼. 관측 dict → 배치 텐서 변환(permute/정규화/unsqueeze) + task/robot_type
+        # 키 채우기까지 여기서 다 해준다. 손으로 텐서를 만들면 이 헬퍼가 채우는
+        # 부가 키(예: task)가 빠져 전처리기 내부에서 "EnvTransition must be a
+        # dictionary. Got Tensor" 같은 에러가 난다 — 실측으로 확인함. 반드시 이걸 쓸 것.
+        try:
+            from lerobot.policies import prepare_observation_for_inference
+        except ImportError:
+            from lerobot.common.policies.utils import prepare_observation_for_inference
+        self._prepare_observation = prepare_observation_for_inference
 
     def predict(self, *, follower_joints: list[float], frames: dict[str, np.ndarray]) -> list[float]:
         """observation(팔로워 관절 + 카메라 프레임) → 다음 관절 목표(degree).
@@ -127,23 +178,44 @@ class ActInferenceRunner:
         frames의 키는 scripts/to_lerobot.py가 변환 시 쓴 것과 동일한 카메라
         이름(config.yaml의 CAMERA_ORDER, 예: cam1~cam5)이어야 한다 — 학습 때
         본 적 없는 카메라 이름을 주면 정책이 조용히 무시하거나 에러를 낸다.
+
+        follower_joints는 팔로워가 실제로 갖고 있는 관절 수(그리퍼 포함 등)만큼
+        넘어오지만, 학습된 state 차원(self._state_dim, action=leader_joint_* 기준)
+        과 다를 수 있다 — 다르면 앞쪽 self._state_dim개만 잘라서 쓴다.
         """
-        torch = self._torch
-        obs: dict = {
-            "observation.state": torch.tensor([follower_joints], dtype=torch.float32, device=self._device),
+        np_arr = np.asarray  # 지역 별칭
+        state = follower_joints
+        if self._state_dim is not None and len(state) != self._state_dim:
+            if len(state) > self._state_dim:
+                state = state[: self._state_dim]
+            else:
+                logger.warning(
+                    "팔로워 관절 수(%d)가 학습된 state 차원(%d)보다 적습니다 — "
+                    "그대로 넘깁니다(에러 가능성 있음).", len(state), self._state_dim,
+                )
+
+        # prepare_observation_for_inference는 순수 numpy 입력을 기대한다
+        # (내부에서 torch.from_numpy + permute + /255 정규화 + batch dim + task/robot_type
+        # 키 추가까지 전부 처리) — 여기서 텐서로 미리 바꾸면 안 된다.
+        raw_obs: dict[str, np.ndarray] = {
+            "observation.state": np_arr(state, dtype=np.float32),
         }
-        for cam, image in frames.items():
-            rgb = image[:, :, ::-1].copy()  # BGR(cv2) → RGB
-            tensor = torch.from_numpy(rgb).permute(2, 0, 1).float().unsqueeze(0) / 255.0
-            obs[f"observation.images.{cam}"] = tensor.to(self._device)
+        cams = frames.items() if self._expected_cameras is None else (
+            (k, v) for k, v in frames.items() if k in self._expected_cameras
+        )
+        for cam, image in cams:
+            rgb = image[:, :, ::-1].copy()  # BGR(cv2) → RGB, (H, W, C) uint8 그대로
+            raw_obs[f"observation.images.{cam}"] = rgb
 
-        if self._preprocessor is not None:
-            obs = self._preprocessor(obs)
-
+        torch = self._torch
         with torch.no_grad():
+            obs = self._prepare_observation(raw_obs, self._device, task="", robot_type=None)
+            if self._preprocessor is not None:
+                obs = self._preprocessor(obs)
+
             action = self._policy.select_action(obs)
 
-        if self._postprocessor is not None:
-            action = self._postprocessor(action)
+            if self._postprocessor is not None:
+                action = self._postprocessor(action)
 
         return [float(v) for v in action.squeeze(0).detach().cpu().tolist()]
