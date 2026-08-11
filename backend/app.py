@@ -15,6 +15,7 @@ from flask import Flask, jsonify, send_from_directory
 from werkzeug.exceptions import HTTPException
 
 from .api import analysis as analysis_api
+from .api import conveyor as conveyor_api
 from .api import ports as ports_api
 from .api import recording as recording_api
 from .api import stream as stream_api
@@ -49,6 +50,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
     app.register_blueprint(stream_api.bp)
     app.register_blueprint(recording_api.bp)
     app.register_blueprint(analysis_api.bp)
+    app.register_blueprint(conveyor_api.bp)
 
     _register_error_handlers(app)
     _register_frontend(app)

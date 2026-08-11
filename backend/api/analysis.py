@@ -8,10 +8,18 @@ import time
 import numpy as np
 from flask import Blueprint, Response, current_app, jsonify, request
 
-from ..core.reconstruct3d import load_object_views, reconstruct_from_views
+from ..core.reconstruct3d import (
+    _extract_silhouette as extract_silhouette,
+)
+from ..core.reconstruct3d import load_backgrounds, load_object_views, reconstruct_from_views
+from ..core.cad import compare_with_scan, load_reference, save_model
+from ..core.storage import imwrite, validate_id
 from ..utils.errors import ValidationError
 
 bp = Blueprint("analysis", __name__, url_prefix="/api")
+
+# 업로드 상한. 이보다 큰 STL 은 브라우저에서 렌더링도 버겁다.
+MAX_MODEL_BYTES = 50_000_000
 
 
 def _hub():
@@ -105,6 +113,93 @@ def scan_objects():
     return jsonify({"ok": True, "objects": items})
 
 
+@bp.post("/scan/background")
+def scan_background():
+    """지금 보이는 화면을 '빈 스캔대'로 저장한다. 물체를 치우고 한 번만 누르면 된다.
+
+    실루엣 추출이 흑백 Otsu 만으로는 이 리그에서 동작하지 않는다(배경에 선반·창문·
+    현수막이 들어와 물체보다 크게 잡힌다). 배경을 알고 있으면 무엇이 놓였는지가
+    아니라 '무엇이 달라졌는지'만 보면 되므로 배경이 복잡해도 상관없어진다.
+
+    조명이나 카메라 위치가 바뀌면 다시 찍어야 한다.
+    """
+    hub = _hub()
+    frames, _ = hub.cameras.snapshot()
+    if not frames:
+        raise ValidationError("카메라에서 프레임을 받지 못했습니다. 연결 상태를 확인하세요.")
+
+    bg_dir = hub.cfg.recording.root / "background"
+    bg_dir.mkdir(parents=True, exist_ok=True)
+    for name, frame in frames.items():
+        imwrite(bg_dir / f"{name}.jpg", frame.image, 95)
+
+    return jsonify({"ok": True, "cameras": sorted(frames), "path": str(bg_dir)})
+
+
+@bp.get("/scan/model/<object_id>")
+def scan_model(object_id: str):
+    """양품 기준이 되는 CAD 모델(STL). lerobot_data/models/<object_id>.stl
+
+    스캔으로 형상을 '만드는' 것보다 설계 형상을 그대로 쓰는 편이 정확하다.
+    5뷰 visual hull 은 오목부를 복원하지 못하고 절대 치수도 없다.
+    """
+    hub = _hub()
+    root = hub.cfg.recording.root
+    mesh = load_reference(root, object_id)
+    if mesh is None:
+        raise ValidationError(
+            f"'{object_id}' 의 기준 모델이 없습니다. "
+            f"lerobot_data/models/{object_id}.stl 로 저장하세요. "
+            "(STEP/STP 는 CAD 툴에서 STL 로 내보내 주세요)"
+        )
+
+    # 스캔 이미지가 있으면 설계와 다른 곳을 색으로 얹는다.
+    label = request.args.get("label", "defect")
+    try:
+        views = load_object_views(root, label, object_id)
+    except FileNotFoundError:
+        views = {}
+
+    if views:
+        backgrounds = load_backgrounds(root)
+        silhouettes = {
+            n: extract_silhouette(img, backgrounds.get(n)) for n, img in views.items()
+        }
+        mesh = compare_with_scan(
+            mesh,
+            silhouettes,
+            {c.name: c.view_dir for c in hub.cfg.cameras.values() if c.view_dir},
+        )
+
+    return jsonify({"ok": True, "mesh": mesh})
+
+
+@bp.post("/scan/model/<object_id>")
+def upload_model(object_id: str):
+    """기준 CAD 모델(STL) 업로드. 대시보드의 '기준 모델 등록' 버튼이 쓴다."""
+    object_id = validate_id(object_id, "object_id")
+
+    upload = request.files.get("file")
+    if upload is None:
+        raise ValidationError("파일이 첨부되지 않았습니다.")
+
+    # 한 바이트 더 읽어 초과 여부를 판정한다. 통째로 읽고 재면 그 시점에 이미
+    # 메모리를 다 쓴 뒤다.
+    raw = upload.read(MAX_MODEL_BYTES + 1)
+    if len(raw) > MAX_MODEL_BYTES:
+        raise ValidationError(
+            f"파일이 너무 큽니다. {MAX_MODEL_BYTES // 1_000_000}MB 이하로 줄여주세요 "
+            "(CAD 에서 내보낼 때 해상도를 낮추면 됩니다)."
+        )
+
+    try:
+        info = save_model(_hub().cfg.recording.root, object_id, raw)
+    except ValueError as exc:
+        raise ValidationError(f"STL 로 읽을 수 없습니다: {exc}") from exc
+
+    return jsonify({"ok": True, "object_id": object_id, **info})
+
+
 @bp.post("/scan/reconstruct")
 def scan_reconstruct():
     """지정한 물체의 5뷰로 3D 메시를 생성해 반환.
@@ -143,6 +238,10 @@ def scan_reconstruct():
         resolution=resolution,
         defect_regions=defect_regions,
         classification=classification,
+        # 빈 스캔대 참조가 있으면 배경 차분, 없으면 Otsu 폴백
+        backgrounds=load_backgrounds(hub.cfg.recording.root),
+        # 리그 기하는 물리적 사실이라 코드가 아니라 config 가 갖는다.
+        directions={c.name: c.view_dir for c in hub.cfg.cameras.values() if c.view_dir},
     )
     return jsonify({"ok": True, "mesh": result.to_dict()})
 
@@ -160,7 +259,7 @@ def scan_reconstruct_demo():
     size = 256
     views = {}
     rng = np.random.default_rng(7)
-    for name in ("front", "back", "left", "right", "top"):
+    for name in ("cam1", "cam2", "cam3", "cam4", "cam5"):
         img = np.full((size, size, 3), 240, np.uint8)
         cx, cy = size // 2, size // 2
         axes = (70 + rng.integers(-8, 8), 90 + rng.integers(-8, 8))
