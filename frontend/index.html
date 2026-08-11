@@ -7,7 +7,7 @@
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 
 <link rel="stylesheet" href="/static/css/tokens.css">
 <link rel="stylesheet" href="/static/css/app.css">
@@ -27,6 +27,11 @@
       </div>
 
       <div class="header__right">
+        <!-- 비상 정지 — 어느 탭에서든 즉시 누를 수 있게 헤더 고정. confirm 없음. -->
+        <button class="btn btn--estop" @click="emergencyStop"
+                title="텔레오퍼레이션 · 모든 컨베이어 · 녹화를 즉시 정지합니다 (팔은 현재 자세 유지)">
+          ⏹ 비상 정지
+        </button>
         <span v-if="meta.simulate" class="status-pill">SIMULATION</span>
         <span class="status-pill">
           <span class="dot" :class="{ 'dot--on': allConnected }"></span>
@@ -39,8 +44,42 @@
       </div>
     </header>
 
+    <!-- ══════════════ 대시보드 레이아웃: 좌측 카테고리 내비 + 콘텐츠 ══════════════
+         전환은 v-show 다. v-if 로 떼어내면 MJPEG 스트림이 재연결되고
+         차트/뷰어의 canvas ref 가 사라져 상태가 초기화된다. -->
+    <div class="layout">
+      <nav class="sidenav" aria-label="대시보드 카테고리">
+        <button v-for="t in tabs" :key="t.id" class="sidenav__item"
+                :class="{ 'sidenav__item--on': tab === t.id }"
+                :aria-current="tab === t.id ? 'page' : null"
+                @click="setTab(t.id)">
+          <span class="sidenav__ko">
+            {{ t.ko }}
+            <!-- 다른 탭에서도 녹화 중임이 보이도록 수집 탭에 점을 띄운다 -->
+            <span v-if="t.id === 'collect' && recording" class="dot dot--busy"></span>
+          </span>
+          <span class="mono mono--xs sidenav__en">{{ t.en }}</span>
+          <span class="sidenav__desc">{{ t.desc }}</span>
+        </button>
+
+        <!-- 바닥 상태 요약 — 어느 탭에 있어도 시스템 상태가 보인다 -->
+        <div class="sidenav__foot">
+          <span class="mono mono--xs">SYSTEM</span>
+          <div class="sidenav__stat">
+            <span class="dot" :class="{ 'dot--on': allConnected }"></span>
+            <span>포트 {{ connectedCount }} / {{ totalCount }} 연결</span>
+          </div>
+          <div class="sidenav__stat">
+            <span class="dot" :class="recording ? 'dot--busy' : 'dot--on'"></span>
+            <span>{{ recording ? '에피소드 녹화 중' : '수집 대기' }}</span>
+          </div>
+        </div>
+      </nav>
+
+      <main class="main">
+
     <!-- ══════════════ 2. PORT MONITORING ══════════════ -->
-    <section class="section">
+    <section class="section" v-show="tab === 'devices'">
       <div class="section__head">
         <div>
           <div class="eyebrow">PORT MONITORING</div>
@@ -56,14 +95,17 @@
         </div>
       </div>
 
-      <div class="grid grid--ports">
-        <!-- 로봇팔 -->
+      <!-- 팔 2 + 카메라 5 를 한 그리드에 두면 어떻게 접혀도 줄이 찢어진다(6+1, 4+3).
+           그룹을 갈라 팔은 2열, 카메라는 5열 — 각 줄이 항상 꽉 찬다. -->
+      <div class="mono mono--sm mono--ink" style="display:block; margin-bottom:12px">ROBOT ARMS</div>
+      <div class="grid grid--arms">
         <article v-for="arm in ports.arms" :key="arm.role" class="card port">
           <div class="port__top">
             <span class="port__name">OMX {{ arm.role === 'leader' ? 'LEADER' : 'FOLLOWER' }}</span>
             <span class="dot" :class="{ 'dot--on': arm.connected }"></span>
           </div>
           <div class="port__path">{{ arm.device || '/dev/ttyACM — UNRESOLVED' }}</div>
+          <div class="port__desc">{{ deviceNote(arm.role) }}</div>
           <div v-if="arm.error" class="port__error">{{ arm.error }}</div>
           <div class="port__facts">
             <span class="mono mono--xs">{{ arm.connected ? 'ONLINE' : 'OFFLINE' }}</span>
@@ -71,14 +113,17 @@
             <button class="chip" @click="identify(arm.role)">IDENTIFY</button>
           </div>
         </article>
+      </div>
 
-        <!-- 카메라 -->
+      <div class="mono mono--sm mono--ink" style="display:block; margin:28px 0 12px">CAMERAS</div>
+      <div class="grid grid--cams">
         <article v-for="cam in ports.cameras" :key="cam.name" class="card port">
           <div class="port__top">
             <span class="port__name">CAM {{ cam.name }}</span>
             <span class="dot" :class="{ 'dot--on': cam.connected }"></span>
           </div>
           <div class="port__path">{{ cam.device }}</div>
+          <div class="port__desc">{{ deviceNote(cam.name) }}</div>
           <div v-if="cam.error" class="port__error">{{ cam.error }}</div>
           <div class="port__facts">
             <span class="mono mono--xs">{{ cam.resolution }}</span>
@@ -91,7 +136,7 @@
     </section>
 
     <!-- ══════════════ 3. LIVE SCAN ══════════════ -->
-    <section class="section">
+    <section class="section" v-show="tab === 'scan'">
       <div class="section__head">
         <div>
           <div class="eyebrow">LIVE SCAN</div>
@@ -104,19 +149,40 @@
           <button class="btn" @click="goHome" :disabled="busy.home || recording">
             {{ busy.home ? 'HOMING…' : 'HOME POSITION' }}
           </button>
-          <button class="btn btn--primary" @click="startConveyor" :disabled="busy.conveyor">컨베이어 시작</button>
-          <button class="btn" @click="stopConveyor" :disabled="busy.conveyor">정지</button>
-          <input
-            class="input" type="number" min="0.5" max="112" step="0.5" style="width:96px"
-            v-model.number="conveyorRpm" @change="setConveyorSpeed"
-            :disabled="busy.conveyor" aria-label="컨베이어 목표 속도 (모터축 RPM)">
-          <button class="btn" @click="toggleConveyorDir" :disabled="busy.conveyor">
-            {{ conveyor.dir === 'ccw' ? '◀ 역방향' : '정방향 ▶' }}
-          </button>
-          <button
-            class="btn" @click="releaseConveyor" :disabled="busy.conveyor"
-            title="펌웨어를 다시 업로드하려면 COM 포트를 놓아야 합니다">포트 해제</button>
-          <span class="mono mono--xs">{{ conveyorLabel }}</span>
+        </div>
+      </div>
+
+      <!-- 컨베이어 벨트 — 벨트가 여러 대라 각자 독립 제어 카드를 갖는다 -->
+      <div class="grid grid--belts" style="margin-bottom:24px">
+        <div v-for="belt in conveyors" :key="belt.name" class="card">
+          <div class="port__top">
+            <span class="port__name">{{ belt.label || belt.name }}</span>
+            <span class="mono mono--xs" :class="{ 'mono--blue': belt.running }">
+              {{ beltStatusLabel(belt) }}
+            </span>
+          </div>
+          <div class="port__desc" style="margin-top:4px">
+            {{ belt.port
+               ? 'PORT ' + belt.port
+               : '포트 미설정 — config.yaml 의 conveyors.' + belt.name + '.port 를 채우세요' }}
+          </div>
+          <div class="btn-row" style="margin-top:16px">
+            <button class="btn btn--primary" @click="startBelt(belt)"
+                    :disabled="busy.conveyor || !belt.port">시작</button>
+            <button class="btn" @click="stopBelt(belt)"
+                    :disabled="busy.conveyor || !belt.port">정지</button>
+            <input class="input" type="number" min="0.5" max="112" step="0.5" style="width:96px"
+                   v-model.number="belt.rpmInput" @change="setBeltSpeed(belt)"
+                   :disabled="busy.conveyor || !belt.port"
+                   :aria-label="(belt.label || belt.name) + ' 목표 속도 (모터축 RPM)'">
+            <button class="btn" @click="toggleBeltDir(belt)"
+                    :disabled="busy.conveyor || !belt.port">
+              {{ belt.dir === 'ccw' ? '◀ 역방향' : '정방향 ▶' }}
+            </button>
+            <button class="btn" @click="releaseBelt(belt)"
+                    :disabled="busy.conveyor || !belt.port"
+                    title="펌웨어를 다시 업로드하려면 COM 포트를 놓아야 합니다">포트 해제</button>
+          </div>
         </div>
       </div>
 
@@ -169,7 +235,7 @@
     </section>
 
     <!-- ══════════════ 4. LABELING & COLLECTION ══════════════ -->
-    <section class="section">
+    <section class="section" v-show="tab === 'collect'">
       <div class="section__head">
         <div>
           <div class="eyebrow">LABELING &amp; COLLECTION</div>
@@ -260,8 +326,8 @@
       </div>
     </section>
 
-    <!-- ══════════════ 5. EPISODES ══════════════ -->
-    <section class="section">
+    <!-- ══════════════ 5. EPISODES — 수집 탭에서 라벨링 폼 아래에 이어진다 ══════════════ -->
+    <section class="section section--follow" v-show="tab === 'collect'">
       <div class="section__head">
         <div>
           <div class="eyebrow">EPISODES</div>
@@ -317,14 +383,14 @@
 
           <div class="btn-row">
             <button class="btn" @click="saveEpisode(ep)" :disabled="busy.episodes">SAVE</button>
-            <button class="btn btn--sunset" @click="deleteEpisode(ep)" :disabled="busy.episodes">DELETE</button>
+            <button class="btn btn--danger" @click="deleteEpisode(ep)" :disabled="busy.episodes">DELETE</button>
           </div>
         </div>
       </div>
     </section>
 
     <!-- ══════════════ 6. TRAINING METRICS ══════════════ -->
-    <section class="section">
+    <section class="section" v-show="tab === 'train'">
       <div class="section__head">
         <div>
           <div class="eyebrow">ACT TRAINING METRICS</div>
@@ -373,6 +439,27 @@
         </div>
       </div>
 
+      <!-- 모방학습 데이터 준비도 — 학습 전에 먼저 보여야 의미가 있어 records 와 무관하게 표시 -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="chart__head">
+          <span class="mono mono--sm mono--ink">모방학습 데이터 준비도</span>
+          <span class="mono mono--xs">ACT 50 에피소드 · 분류 클래스당 물체 50개 권장</span>
+        </div>
+        <div class="grid grid--form">
+          <div v-for="m in readiness" :key="m.label" class="meter">
+            <div class="meter__head">
+              <span class="mono mono--xs">{{ m.label }}</span>
+              <span class="mono mono--sm mono--ink">
+                {{ m.n }} / {{ m.goal }}<span v-if="m.pct >= 100"> ✓</span>
+              </span>
+            </div>
+            <div class="meter__track">
+              <div class="meter__fill" :style="{ width: m.pct + '%' }"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div v-if="training.records.length === 0 && !training.running" class="card">
         <div class="mono mono--sm" style="text-align:center; padding:24px 0">
           START TRAINING 을 눌러 학습을 시작하면 지표가 실시간으로 표시됩니다
@@ -381,7 +468,7 @@
 
       <template v-else>
         <!-- KPI 스트립: ACT 회귀 지표 -->
-        <div class="grid grid--form" style="margin-bottom:24px">
+        <div class="grid grid--kpi" style="margin-bottom:24px">
           <div class="card kpi">
             <span class="mono mono--xs">TRAIN L1 LOSS</span>
             <span class="kpi__value">{{ fmtNum(training.kpi.trainLoss) }}</span>
@@ -402,10 +489,41 @@
           <div class="card kpi">
             <span class="mono mono--xs">EPOCH</span>
             <span class="kpi__value">{{ training.kpi.epoch }} / {{ training.params.epochs }}</span>
-            <span class="mono mono--xs" :class="{ 'mono--sunset': training.running }">
+            <span class="mono mono--xs" :class="{ 'mono--blue': training.running }">
               {{ training.state }}
             </span>
           </div>
+
+          <!-- 학습 곡선에서 파생한 모방학습 진단 지표 -->
+          <template v-if="ilMetrics">
+            <div class="card kpi">
+              <span class="mono mono--xs">손실 개선율</span>
+              <span class="kpi__value">{{ fmtPct(ilMetrics.improvement) }}</span>
+              <span class="mono mono--xs">첫 에폭 대비</span>
+            </div>
+            <div class="card kpi">
+              <span class="mono mono--xs">최적 에폭 BEST</span>
+              <span class="kpi__value">{{ training.bestEpoch ?? '—' }}</span>
+              <span class="mono mono--xs">
+                VAL {{ training.bestValLoss != null ? fmtNum(training.bestValLoss) : '—' }}
+              </span>
+            </div>
+            <div class="card kpi">
+              <span class="mono mono--xs">일반화 갭 VAL−TRAIN</span>
+              <span class="kpi__value" :class="{ 'mono--sunset': ilMetrics.gapRatio > 0.3 }">
+                {{ fmtNum(ilMetrics.gap) }}
+              </span>
+              <span class="mono mono--xs">TRAIN 대비 {{ fmtPct(ilMetrics.gapRatio) }} · 크면 시연 암기(과적합)</span>
+            </div>
+            <div class="card kpi">
+              <span class="mono mono--xs">학습 진단</span>
+              <span class="kpi__value" style="font-size:24px"
+                    :class="{ 'mono--sunset': ilMetrics.state.warn }">
+                {{ ilMetrics.state.text }}
+              </span>
+              <span class="mono mono--xs">최근 5 에폭 VAL 추세 기준</span>
+            </div>
+          </template>
         </div>
 
         <!-- 손실 곡선 (train/val) -->
@@ -420,12 +538,22 @@
           <canvas ref="lossChart" class="chart"></canvas>
         </div>
 
-        <!-- 성공률 곡선 -->
-        <div class="card card--flush" style="padding:16px; margin-top:12px">
-          <div class="chart__head">
-            <span class="mono mono--sm mono--ink">SUCCESS RATE (@ {{ training.params.threshold_deg }}°)</span>
+        <!-- 성공률 · VAL MAE — 화면이 넓으니 나란히 -->
+        <div class="grid grid--charts" style="margin-top:16px">
+          <div class="card card--flush" style="padding:16px">
+            <div class="chart__head">
+              <span class="mono mono--sm mono--ink">SUCCESS RATE (@ {{ training.params.threshold_deg }}°)</span>
+              <span class="mono mono--xs">모든 관절이 임계값 이내인 비율</span>
+            </div>
+            <canvas ref="successChart" class="chart"></canvas>
           </div>
-          <canvas ref="successChart" class="chart"></canvas>
+          <div class="card card--flush" style="padding:16px">
+            <div class="chart__head">
+              <span class="mono mono--sm mono--ink">VAL MAE (DEG)</span>
+              <span class="mono mono--xs">관절 각도가 평균 몇 도 틀리는가</span>
+            </div>
+            <canvas ref="maeChart" class="chart"></canvas>
+          </div>
         </div>
 
         <!-- 관절별 MAE -->
@@ -448,7 +576,7 @@
     </section>
 
     <!-- ══════════════ 7. 3D SCAN INSPECTION ══════════════ -->
-    <section class="section">
+    <section class="section" v-show="tab === 'inspect'">
       <div class="section__head">
         <div>
           <div class="eyebrow">3D SCAN INSPECTION</div>
@@ -465,7 +593,7 @@
           <button class="btn" @click="refreshObjects" :disabled="busy.objects">
             {{ busy.objects ? 'LOADING…' : 'REFRESH' }}
           </button>
-          <button class="btn btn--sunset" @click="reconstruct" :disabled="!scan.selectedKey || busy.recon">
+          <button class="btn btn--primary" @click="reconstruct" :disabled="!scan.selectedKey || busy.recon">
             {{ busy.recon ? 'RECONSTRUCTING…' : 'RECONSTRUCT 3D' }}
           </button>
           <!-- 파일 선택창은 숨기고 버튼으로 연다. 기본 input 은 스타일이 안 맞는다. -->
@@ -484,9 +612,53 @@
         </div>
       </div>
 
+      <!-- 검사 현황 — 라벨링된 물체 기준 양품/불량 비율. 도넛 + 표. -->
+      <div class="card inspect-summary" style="margin-bottom:16px">
+        <div class="donut-wrap" role="img"
+             :aria-label="'불량률 ' + fmtPct(inspectionShare.ratio)">
+          <svg viewBox="0 0 110 110" class="donut">
+            <circle class="donut__ring" cx="55" cy="55" r="44"
+                    :class="{ 'donut__ring--empty': !inspectionShare.total }"/>
+            <circle v-if="inspectionShare.defect" class="donut__seg" cx="55" cy="55" r="44"
+                    :stroke-dasharray="inspectionShare.dash"/>
+          </svg>
+          <div class="donut__center">
+            <span class="kpi__value" style="font-size:34px">
+              {{ inspectionShare.total ? fmtPct(inspectionShare.ratio) : '—' }}
+            </span>
+            <span class="mono mono--xs">불량률</span>
+          </div>
+        </div>
+
+        <div class="ratio-table">
+          <div class="ratio-row">
+            <span class="dot" style="background: var(--accent-blue)"></span>
+            <span>양품</span>
+            <span class="ratio-row__num">{{ inspectionShare.good }}개</span>
+            <span class="mono mono--xs">{{ fmtPct(inspectionShare.goodRatio) }}</span>
+          </div>
+          <div class="ratio-row">
+            <span class="dot" style="background: var(--accent-sunset)"></span>
+            <span>불량</span>
+            <span class="ratio-row__num">{{ inspectionShare.defect }}개</span>
+            <span class="mono mono--xs">{{ fmtPct(inspectionShare.ratio) }}</span>
+          </div>
+          <div class="ratio-row ratio-row--total">
+            <span></span>
+            <span>검사 물체 합계</span>
+            <span class="ratio-row__num">{{ inspectionShare.total }}개</span>
+            <span class="mono mono--xs">라벨 기준</span>
+          </div>
+          <div class="port__desc" style="margin-top:4px">
+            수집 탭에서 라벨링한 물체(object_id) 기준입니다. 같은 물체를 여러 번
+            스캔해도 1개로 셉니다.
+          </div>
+        </div>
+      </div>
+
       <!-- 결과 스트립. CAD 기준 모델과 스캔 재구성은 의미 있는 지표가 다르다.
            모든 참조에 ?. 를 쓴다 — 한 곳만 빠져도 렌더가 통째로 죽어 화면이 검게 된다. -->
-      <div v-if="scan.hasMesh" class="grid grid--form" style="margin-bottom:12px">
+      <div v-if="scan.hasMesh" class="grid grid--kpi" style="margin-bottom:12px">
         <template v-if="isCadModel">
           <div class="card kpi">
             <span class="mono mono--xs">기준 모델</span>
@@ -556,6 +728,9 @@
         </div>
       </div>
     </section>
+
+      </main>
+    </div><!-- /.layout -->
   </div>
 
   <!-- 토스트 -->
