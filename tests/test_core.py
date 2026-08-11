@@ -129,3 +129,55 @@ class TestCameraSync:
         median_skew = skews[len(skews) // 2]
         # 최근접 이웃 정렬이 동작하면 중앙값은 한 프레임 주기(33ms)보다 훨씬 작다.
         assert median_skew < 20.0, f"동기화 회귀 의심: median skew {median_skew:.1f}ms"
+
+
+# --------------------------------------------------------------- 잘린 프레임 판정
+class TestTruncatedFrame:
+    """대역폭이 모자라면 MJPEG 가 중간에 끊긴 채 디코딩돼 아래쪽이 단색이 된다.
+    이 판정이 헐거우면 검은 줄이 학습 데이터에 섞이고, 빡빡하면 정상 프레임을 버린다."""
+
+    def _worker(self):
+        from backend.config import CameraConfig
+        from backend.core.camera_manager import _CameraWorker
+        return _CameraWorker(CameraConfig(name="cam1", device=0))
+
+    def test_아래쪽이_단색이면_잘린_프레임(self):
+        import numpy as np
+        img = np.random.default_rng(0).integers(0, 255, (480, 640, 3), dtype=np.uint8)
+        img[-8:] = 0                      # 디코더가 검정으로 채운 상태
+        assert self._worker()._is_truncated(img) is True
+
+    def test_실제_장면은_노이즈가_있어_버리지_않는다(self):
+        import numpy as np
+        img = np.random.default_rng(1).integers(0, 255, (480, 640, 3), dtype=np.uint8)
+        assert self._worker()._is_truncated(img) is False
+
+    def test_거의_균일하지만_완전하지_않으면_통과시킨다(self):
+        import numpy as np
+        img = np.full((480, 640, 3), 30, np.uint8)   # 어두운 배경
+        img[-1, -1, 0] = 31                          # 센서 노이즈 1픽셀
+        assert self._worker()._is_truncated(img) is False
+
+
+# --------------------------------------------------------------- 포트 힌트 매칭
+class TestPortHint:
+    """Windows 는 COM 번호 대소문자를 가리지 않는다. config 에 'com6' 라고 적었다고
+    실제 'COM6' 를 못 찾으면 팔이 통째로 인식 안 된 것처럼 보인다."""
+
+    def _registry(self, hint):
+        from backend.config import ArmConfig
+        from backend.core.port_finder import PortRegistry
+        return PortRegistry({"leader": ArmConfig(role="leader", port_hint=hint)})
+
+    def test_소문자_힌트도_매칭된다(self, monkeypatch):
+        import backend.core.port_finder as pf
+        fake = pf.SerialPortInfo("COM6", "", "", 0x2F5D, 0x2202, None, None)
+        monkeypatch.setattr(pf, "scan_serial_ports", lambda: [fake])
+        assert self._registry("com6").resolve("leader") == "COM6"
+
+    def test_없는_포트는_여전히_실패한다(self, monkeypatch):
+        import backend.core.port_finder as pf
+        from backend.utils.errors import ArmPortNotFoundError
+        monkeypatch.setattr(pf, "scan_serial_ports", lambda: [])
+        with pytest.raises(ArmPortNotFoundError):
+            self._registry("com7").resolve("leader")

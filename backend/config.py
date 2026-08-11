@@ -17,7 +17,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 
 # 카메라 순서는 저장 폴더/파케이 컬럼 순서와 직결되므로 상수로 고정한다.
-CAMERA_ORDER: tuple[str, ...] = ("front", "back", "left", "right", "top", "global")
+# cam1~cam5 는 물리 배치가 아니라 슬롯 번호다. 각 슬롯이 물체를 어느 방향에서
+# 보는지는 reconstruct3d.VIEW_DIRECTIONS 가 정한다(3D 재구성이 그 값을 쓴다).
+CAMERA_ORDER: tuple[str, ...] = ("cam1", "cam2", "cam3", "cam4", "cam5", "global")
 DEFECT_TYPES: tuple[str, ...] = ("scratch", "dent", "discoloration", "crack", "other")
 
 
@@ -25,10 +27,32 @@ DEFECT_TYPES: tuple[str, ...] = ("scratch", "dent", "discoloration", "crack", "o
 class CameraConfig:
     name: str
     device: str | int          # /dev/v4l/by-id/... 또는 인덱스 정수
+    # 장치 이름으로 지목한다(권장). USB 를 다시 꽂거나 재부팅하면 인덱스는 밀리지만
+    # 이름은 그대로다 — arm 의 serial_number 와 같은 역할이다.
+    # 같은 이름이 여러 대면 nth 로 몇 번째인지 고른다(0-based).
+    # 이름이 지정되면 device 는 무시되고 DirectShow 로 연다(이름의 출처가 DirectShow 라
+    # MSMF 인덱스와 순서가 다르다 — 실측: DSHOW 0=ACER, MSMF 1=ACER).
+    match_name: str | None = None
+    nth: int = 0
+    # 카메라를 거꾸로 매달았을 때 상하 반전. 프리뷰·녹화·분류 이미지 전부에 적용된다
+    # (한 곳에서 뒤집어야 학습 데이터와 눈으로 본 화면이 어긋나지 않는다).
+    vflip: bool = False
+    # 3D 재구성용: '물체 → 카메라' 방향 벡터 [x, y, z]. +X 오른쪽, +Y 위, +Z 앞.
+    # 크기는 무관(정규화한다). None 이면 reconstruct3d 의 기본값을 쓴다.
+    view_dir: tuple[float, float, float] | None = None
+    # 자동 화이트밸런스를 끈다. 배경 차분을 쓰려면 사실상 필수 —
+    # 물체가 들어올 때마다 색온도가 바뀌면 배경 참조가 곧바로 무효가 된다.
+    lock_white_balance: bool = False
+    # 고정할 색온도(K). None 이면 자동 WB 만 끄고 현재 값을 유지한다.
+    white_balance: float | None = None
     width: int = 640
     height: int = 480
     fps: int = 30
     fourcc: str = "MJPG"       # YUYV 는 640x480@30 이상에서 USB 대역폭 부족
+    # 수동 노출(MSMF 기준 log2 초: -6 = 1/64초). None 이면 카메라 자동 노출에 맡긴다.
+    # 조명 플리커로 가로 줄무늬가 생기면 값을 키워(-5, -4) 노출을 길게 한다.
+    # 측정: 1/256초 밴딩 0.86 → 1/16초 0.25. 단 길게 하면 밝은 곳이 날아간다.
+    exposure: float | None = None
 
     @property
     def resolution(self) -> str:
@@ -67,9 +91,15 @@ class RecordingConfig:
     # 프레임 간 타임스탬프 편차가 이 값을 넘으면 metadata 에 경고로 기록
     max_sync_skew_ms: float = 15.0
     jpeg_quality: int = 90
-    # 분류용 정지 이미지를 뽑을 시점(에피소드 진행률 0.0~1.0)
-    classification_capture_at: float = 0.5
     queue_maxsize: int = 512
+
+
+@dataclass(frozen=True)
+class ConveyorConfig:
+    # ESP32(TB6600+NEMA17)와 USB-UART로 연결. 비어있으면 API가 503을 반환한다.
+    port: str = ""
+    baudrate: int = 115200
+    timeout_sec: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -88,6 +118,7 @@ class AppConfig:
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     arms: dict[str, ArmConfig] = field(default_factory=dict)
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
+    conveyor: ConveyorConfig = field(default_factory=ConveyorConfig)
 
 
 def _as_tuple_of_pairs(raw) -> tuple[tuple[float, float], ...]:
@@ -126,7 +157,6 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         sample_rate_hz=int(rec_raw.get("sample_rate_hz", 30)),
         max_sync_skew_ms=float(rec_raw.get("max_sync_skew_ms", 15.0)),
         jpeg_quality=int(rec_raw.get("jpeg_quality", 90)),
-        classification_capture_at=float(rec_raw.get("classification_capture_at", 0.5)),
         queue_maxsize=int(rec_raw.get("queue_maxsize", 512)),
     )
 
@@ -148,17 +178,44 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     cameras: dict[str, CameraConfig] = {}
     cam_raw = raw.get("cameras") or {}
     for idx, name in enumerate(CAMERA_ORDER):
-        node = cam_raw.get(name) or {}
+        node = cam_raw.get(name)
+        # cameras 블록이 아예 없으면(테스트/CI) 기본 인덱스로 전부 만든다.
+        # 블록이 있는데 이 슬롯이 없거나 enabled: false 면 그 슬롯은 쓰지 않는다.
+        # 있지도 않은 카메라를 2초마다 재연결 시도하는 것은 로그만 더럽힌다.
+        if cam_raw and (node is None or node.get("enabled") is False):
+            continue
+        node = node or {}
         cameras[name] = CameraConfig(
             name=name,
             device=node.get("device", idx),
+            match_name=node.get("match_name"),
+            nth=int(node.get("nth", 0)),
+            vflip=bool(node.get("vflip", False)),
+            view_dir=(
+                tuple(float(v) for v in node["view_dir"])
+                if node.get("view_dir") else None
+            ),
             width=int(node.get("width", 640)),
             height=int(node.get("height", 480)),
             fps=int(node.get("fps", 30)),
             fourcc=node.get("fourcc", "MJPG"),
+            exposure=None if node.get("exposure") is None else float(node["exposure"]),
+            lock_white_balance=bool(node.get("lock_white_balance", False)),
+            white_balance=(
+                None if node.get("white_balance") is None else float(node["white_balance"])
+            ),
         )
 
-    return AppConfig(server=server, safety=safety, recording=recording, arms=arms, cameras=cameras)
+    conv_raw = raw.get("conveyor") or {}
+    conveyor = ConveyorConfig(
+        port=conv_raw.get("port") or "",
+        baudrate=int(conv_raw.get("baudrate", 115200)),
+        timeout_sec=float(conv_raw.get("timeout_sec", 2.0)),
+    )
+
+    return AppConfig(
+        server=server, safety=safety, recording=recording, arms=arms, cameras=cameras, conveyor=conveyor
+    )
 
 
 def _env_bool(key: str, default: bool) -> bool:

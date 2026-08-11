@@ -10,6 +10,16 @@ pyarrow==17.0.0
 # --- 3D 재구성 (marching cubes; 없으면 복셀 큐브 폴백) ---
 scikit-image==0.24.0
 
+# --- 불량 분류 CNN (ResNet18 + LoRA). CPU 버전으로 충분하며, GPU 가 있으면
+# --- https://pytorch.org 의 CUDA 휠로 바꿔 설치하세요.
+torch
+torchvision
+
+# --- 카메라 이름 매칭 (Windows) ---
+# 정수 인덱스는 USB 를 다시 꽂으면 밀리므로 config 는 장치 이름으로 지목합니다.
+# 없으면 이름 매칭만 비활성화되고 서버는 인덱스 방식으로 계속 동작합니다.
+pygrabber==0.2
+
 # --- 하드웨어 (실기 배포 시에만 필요) ---
 # 미설치 상태에서도 서버는 기동되며, 실제 arm 연결 시점에만 에러가 납니다.
 dynamixel-sdk==3.7.31
@@ -22,7 +32,8 @@ gevent==24.2.1
 # --- 개발/테스트 (선택) ---
 pytest==8.3.3
 
-# --- 실제 LeRobot ACT 학습/rollout (선택, 무거움) ---
-# 대시보드/텔레옵/녹화/3D스캔/컨베이어·게이트만 다루면 이 아래는 설치 불필요.
-# torch+lerobot을 다루는 사람만: pip install -r requirements-lerobot.txt
-# (병렬 작업 시 전원이 무거운 GPU 의존성을 안 깔아도 되게 하기 위한 분리입니다.)
+# --- 실제 LeRobot ACT 학습(별도 프로세스)/rollout (선택) ---
+# torch는 위에서 이미 CNN 분류용으로 설치됩니다. lerobot 패키지 자체만 추가로 필요한
+# 사람이 따로 설치: pip install -r requirements-lerobot.txt
+# (에피소드→LeRobotDataset 변환은 scripts/to_lerobot.py, 학습은 lerobot-train CLI를
+# 씁니다. rollout(자율 실행)만 이 서버 프로세스 안에서 lerobot을 import합니다.)

@@ -149,127 +149,29 @@ class DemoTrainer:
 
 
 class LeRobotTrainer:
-    """실제 lerobot ACT 학습 어댑터.
+    """실제 ACT 학습은 이 대시보드가 아니라 lerobot 의 CLI 가 담당한다.
 
-    자체 포맷 에피소드(`<dataset_root>/episodes/episode_*`)를 최초 1회
-    공식 LeRobotDataset 으로 변환한 뒤(`lerobot_bridge.convert_episodes_to_dataset`),
-    ACTPolicy 를 학습한다. 진행 상황은 DemoTrainer 와 동일한
-    MetricHistory/EpochRecord 인터페이스로 흘려보내므로 대시보드 차트
-    (`ACT 학습·실시간`)는 코드 변경 없이 그대로 동작한다.
+    학습은 GPU 를 몇 시간 점유하므로, 카메라 5대와 시리얼 포트를 붙잡고 있는
+    이 서버 프로세스 안에서 돌릴 일이 아니다. 별도 프로세스로 띄우면 서버를
+    재시작해도 학습이 살아남고, 로그·체크포인트 관리도 lerobot 이 이미 한다.
+    여기서는 다음에 실행할 두 줄을 알려주는 역할만 한다.
 
-    lerobot 의 Python API 는 버전에 따라 시그니처가 자주 바뀐다. 실제 연동
-    로직은 전부 `lerobot_bridge.py` 에 격리해뒀으니, 설치된 버전과 안 맞으면
-    그 파일만 보면 된다.
+    (참고) rollout(자율 실행)은 반대로 이 프로세스 안에서 돌아야 한다 —
+    팔로워/카메라를 이미 이 프로세스가 쥐고 있기 때문이다. 그건
+    `backend/core/rollout.py`의 `AutoRunLoop`가 담당하고, 학습된 체크포인트만
+    (`scripts/to_lerobot.py` → `lerobot-train`이 만든 것) 넘겨받아 추론만 한다.
     """
 
-    def __init__(self, dataset_root: Path) -> None:
-        self._episodes_root = dataset_root / "episodes"
-        self._dataset_cache_root = dataset_root / "lerobot_datasets"
-        self._checkpoint_root = dataset_root / "checkpoints"
-
     def run(self, ctrl: TrainingController) -> None:
-        try:
-            from . import lerobot_bridge as lb
-        except ImportError as exc:  # 이 모듈 자체가 없을 정도로 손상된 설치
-            ctrl.set_state("FAILED", f"lerobot_bridge 로드 실패: {exc}")
-            return
-
-        p = ctrl.params
-        repo_id = p.get("repo_id", "local/omx_pick_and_place")
-        epochs = int(p.get("epochs", 50))
-        threshold = float(p.get("threshold_deg", 5.0))
-        steps_per_epoch = int(p.get("steps_per_epoch", 50))
-        batch_size = int(p.get("batch_size", 8))
-        device_str = p.get("device", "auto")
-
-        ctrl.set_state("RUNNING")
-        try:
-            dataset_dir = self._dataset_cache_root / repo_id.replace("/", "__")
-            if not dataset_dir.exists() or p.get("force_reconvert"):
-                logger.info("에피소드 → LeRobotDataset 변환 시작 (repo_id=%s)", repo_id)
-                result = lb.convert_episodes_to_dataset(
-                    self._episodes_root, dataset_dir, repo_id=repo_id,
-                )
-                logger.info(
-                    "변환 완료: %d episodes, %d frames, %.1fs",
-                    result.num_episodes, result.num_frames, result.seconds,
-                )
-
-            session = lb.build_act_training_session(dataset_dir, repo_id, device_str=device_str)
-            policy = session["policy"]
-            optimizer = session["optimizer"]
-            preprocessor = session["preprocessor"]
-            torch = session["torch"]
-
-            dataloader = torch.utils.data.DataLoader(
-                session["dataset"], batch_size=batch_size, shuffle=True, drop_last=True,
-            )
-
-            for epoch in range(1, epochs + 1):
-                if ctrl.should_stop:
-                    ctrl.set_state("STOPPED")
-                    logger.info("LeRobot 학습 중단 요청 수신 (epoch %d)", epoch)
-                    return
-
-                t0 = time.time()
-                losses: list[float] = []
-                last_batch = None
-                step = 0
-                for batch in dataloader:
-                    batch = preprocessor(batch)
-                    loss, _ = policy.forward(batch)
-                    loss.backward()
-                    optimizer.step()
-                    optimizer.zero_grad()
-                    losses.append(float(loss.item()))
-                    last_batch = batch
-                    step += 1
-                    if step >= steps_per_epoch:
-                        break
-
-                train_loss = sum(losses) / max(len(losses), 1)
-
-                val = None
-                if last_batch is not None:
-                    policy.eval()
-                    val = lb.quick_eval(
-                        policy, last_batch, threshold_deg=threshold,
-                        torch_mod=torch, compute_metrics_fn=compute_metrics,
-                    )
-                    policy.train()
-
-                ctrl.history.append(
-                    EpochRecord(
-                        epoch=epoch,
-                        train_loss=round(train_loss, 4),
-                        val_loss=round(val.loss, 4) if val else None,
-                        val_mae_deg=round(val.mae_overall_deg, 3) if val else None,
-                        val_success_rate=round(val.success_rate, 4) if val else None,
-                        val_mae_per_joint=val.mae_per_joint_deg if val else [],
-                        lr=float(optimizer.param_groups[0]["lr"]),
-                        seconds=round(time.time() - t0, 3),
-                    )
-                )
-                logger.info(
-                    "[LeRobot] epoch %d/%d train_loss=%.4f val_success=%s (%.1fs)",
-                    epoch, epochs, train_loss,
-                    f"{val.success_rate:.2%}" if val else "N/A",
-                    time.time() - t0,
-                )
-
-            self._checkpoint_root.mkdir(parents=True, exist_ok=True)
-            ckpt_dir = self._checkpoint_root / repo_id.replace("/", "__")
-            policy.save_pretrained(ckpt_dir)
-            session["preprocessor"].save_pretrained(ckpt_dir)
-            session["postprocessor"].save_pretrained(ckpt_dir)
-            logger.info("체크포인트 저장 완료: %s", ckpt_dir)
-
-            ctrl.set_state("DONE")
-        except lb.LeRobotUnavailableError as exc:
-            ctrl.set_state("FAILED", str(exc))
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("LeRobot 학습 실패")
-            ctrl.set_state("FAILED", f"학습 중 오류: {exc}")
+        repo_id = ctrl.params.get("repo_id", "omx/scan")
+        ctrl.set_state(
+            "FAILED",
+            "실제 ACT 학습은 별도 프로세스에서 실행합니다:\n"
+            f"  1) python scripts/to_lerobot.py --repo-id {repo_id}\n"
+            f"  2) lerobot-train --dataset.repo_id={repo_id} --policy.type=act\n"
+            "이 화면의 실시간 차트는 DEMO 모드로 확인하세요.\n"
+            "학습이 끝나면 체크포인트 경로로 POST /api/rollout/start 를 호출하세요.",
+        )
 
 
 class TrainingManager:
@@ -288,7 +190,7 @@ class TrainingManager:
 
             params.setdefault("dataset_root", str(self._dataset_root))
             ctrl = TrainingController(params)
-            backend: TrainerBackend = DemoTrainer() if demo else LeRobotTrainer(self._dataset_root)
+            backend: TrainerBackend = DemoTrainer() if demo else LeRobotTrainer()
 
             def _run():
                 try:

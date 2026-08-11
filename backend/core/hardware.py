@@ -21,6 +21,7 @@ from .arm_controller import (
 )
 from .act_trainer import TrainingManager
 from .camera_manager import CameraManager
+from .conveyor import ConveyorController
 from .port_finder import IdentifySession, PortRegistry
 from .recorder import Recorder
 from .rollout import AutoRunLoop
@@ -41,9 +42,9 @@ class HardwareHub:
 
         self.recorder = Recorder(cfg.recording, self.cameras, self.leader, self.follower)
         self.training = TrainingManager(cfg.recording.root)
+        self.conveyor = ConveyorController(cfg.conveyor, simulate=cfg.server.simulate)
         self._teleop: TeleopLoop | None = None
         self._autorun: AutoRunLoop | None = None
-        self._checkpoint_root = cfg.recording.root / "checkpoints"
         self._lock = threading.RLock()
 
     def _build_arm(self, role: str) -> ArmController:
@@ -83,6 +84,7 @@ class HardwareHub:
                     except Exception:  # noqa: BLE001
                         logger.exception("%s arm 종료 중 오류", arm.role)
                 self.cameras.stop()
+                self.conveyor.disconnect()
         logger.info("하드웨어 정리 완료")
 
     # ---------------------------------------------------------------- 텔레오퍼
@@ -123,8 +125,18 @@ class HardwareHub:
 
         teleop과는 상호 배타적이다 — 둘 다 follower.write()를 호출하는
         루프라 동시에 돌면 명령이 뒤섞인다. 반드시 하나만 실행되게 막는다.
+
+        checkpoint는 필수다. 학습이 `lerobot-train` 별도 프로세스에서 도는
+        구조라(act_trainer.LeRobotTrainer 참고), 이 서버는 어느 체크포인트가
+        최신인지 알 방법이 없다 — `outputs/train/<job_name>/checkpoints/<step>/
+        pretrained_model/` 처럼 학습 로그 마지막 줄에 찍힌 경로를 그대로 넘겨라.
         """
         with self._lock:
+            if not checkpoint:
+                raise ValidationError(
+                    "checkpoint 경로가 필요합니다. lerobot-train 학습 로그에 출력된 "
+                    "pretrained_model 폴더 경로를 넘기세요."
+                )
             if self._teleop and self._teleop.is_alive():
                 raise ValidationError("teleop이 실행 중입니다. 먼저 TELEOP STOP을 누르세요.")
             if self._autorun and self._autorun.is_alive():
@@ -133,9 +145,8 @@ class HardwareHub:
             # 지연 임포트: lerobot/torch 미설치 상태에서도 서버 자체는 기동돼야 한다.
             from .lerobot_bridge import ActInferenceRunner, LeRobotUnavailableError
 
-            ckpt_path = checkpoint or str(self._default_checkpoint_dir())
             try:
-                runner = ActInferenceRunner(ckpt_path)
+                runner = ActInferenceRunner(checkpoint)
             except LeRobotUnavailableError as exc:
                 raise ValidationError(str(exc)) from exc
 
@@ -143,7 +154,7 @@ class HardwareHub:
             self.follower.set_torque(True)
             self._autorun = AutoRunLoop(runner, self.follower, self.cameras, self.cfg.safety, rate_hz=rate_hz)
             self._autorun.start()
-            logger.info("autorun 시작: checkpoint=%s", ckpt_path)
+            logger.info("autorun 시작: checkpoint=%s", checkpoint)
             return self._autorun.status()
 
     def stop_autorun(self) -> dict:
@@ -161,18 +172,6 @@ class HardwareHub:
         if self._autorun:
             return self._autorun.status()
         return {"running": False, "fault": None, "tick_count": 0}
-
-    def _default_checkpoint_dir(self):
-        """checkpoint 인자를 안 주면 가장 최근에 학습된 체크포인트를 쓴다."""
-        if not self._checkpoint_root.exists():
-            raise ValidationError(
-                f"체크포인트가 없습니다 ({self._checkpoint_root}). "
-                "checkpoint 경로를 직접 지정하거나 먼저 학습을 완료하세요."
-            )
-        candidates = sorted(self._checkpoint_root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
-        if not candidates:
-            raise ValidationError(f"{self._checkpoint_root} 안에 체크포인트 폴더가 없습니다.")
-        return candidates[0]
 
 
 class _LazyDynamixelBackend:

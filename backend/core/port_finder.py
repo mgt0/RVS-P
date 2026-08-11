@@ -106,9 +106,13 @@ class PortRegistry:
                     available=list(available),
                 )
 
-            # 3) 수동 힌트
-            if arm.port_hint and arm.port_hint in available:
-                return arm.port_hint
+            # 3) 수동 힌트 — Windows 의 COM 번호는 대소문자를 가리지 않으므로
+            #    config 에 'com6' 라고 적어도 'COM6' 에 매칭시킨다.
+            if arm.port_hint:
+                hint = arm.port_hint.strip().lower()
+                for dev in available:
+                    if dev.lower() == hint:
+                        return dev
 
             raise ArmPortNotFoundError(
                 role,
