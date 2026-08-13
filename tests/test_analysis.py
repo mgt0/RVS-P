@@ -678,3 +678,16 @@ class TestBackgroundFallback:
         assert mask.mean() < 0.3
         ys, xs = np.nonzero(mask)
         assert 0.3 < ys.mean() / 240 < 0.75
+
+
+# --------------------------------------------------------------- 비상 정지
+class TestEmergencyStop:
+    def test_모든_장치를_세우고_결과를_보고한다(self, client):
+        r = client.post("/api/emergency_stop")
+        assert r.status_code == 200
+        d = r.get_json()
+        assert d["ok"] is True
+        assert d["teleop"]["running"] is False
+        # 설정된 벨트 전부에 대해 결과가 보고돼야 한다(부분 실패도 항목으로 남는다)
+        assert set(d["conveyors"]) == {"feed", "work"}
+        assert d["recording"] in ("idle", "aborted")

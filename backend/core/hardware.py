@@ -42,7 +42,10 @@ class HardwareHub:
 
         self.recorder = Recorder(cfg.recording, self.cameras, self.leader, self.follower)
         self.training = TrainingManager(cfg.recording.root)
-        self.conveyor = ConveyorController(cfg.conveyor, simulate=cfg.server.simulate)
+        self.conveyors = {
+            name: ConveyorController(c, simulate=cfg.server.simulate)
+            for name, c in cfg.conveyors.items()
+        }
         self._teleop: TeleopLoop | None = None
         self._autorun: AutoRunLoop | None = None
         self._lock = threading.RLock()
@@ -84,8 +87,45 @@ class HardwareHub:
                     except Exception:  # noqa: BLE001
                         logger.exception("%s arm 종료 중 오류", arm.role)
                 self.cameras.stop()
-                self.conveyor.disconnect()
+                for conveyor in self.conveyors.values():
+                    conveyor.disconnect()
         logger.info("하드웨어 정리 완료")
+
+    # ---------------------------------------------------------------- 비상 정지
+    def emergency_stop(self) -> dict:
+        """움직이는 모든 것을 즉시 세운다.
+
+        한 장치가 실패해도 나머지는 반드시 계속 시도한다 — 비상 정지에서
+        예외로 중단하는 것은 최악의 동작이다.
+
+        팔로워 토크는 켜둔다. 여기서 토크를 풀면 팔이 중력으로 낙하해
+        '정지'가 오히려 충돌을 만든다. 멈춘 자세를 유지하는 것이 정지다.
+        """
+        result: dict = {}
+        try:
+            result["teleop"] = self.stop_teleop()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("비상 정지: 텔레오퍼 정지 실패")
+            result["teleop"] = {"error": str(exc)}
+
+        belts: dict = {}
+        for name, ctrl in self.conveyors.items():
+            try:
+                ctrl.stop()
+                belts[name] = "stopped"
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("비상 정지: 벨트 %s 정지 실패", name)
+                belts[name] = f"error: {exc}"
+        result["conveyors"] = belts
+
+        if self.recorder.state.value != "IDLE":
+            self.recorder.abort("비상 정지")
+            result["recording"] = "aborted"
+        else:
+            result["recording"] = "idle"
+
+        logger.warning("비상 정지 실행: %s", result)
+        return result
 
     # ---------------------------------------------------------------- 텔레오퍼
     def start_teleop(self) -> dict:

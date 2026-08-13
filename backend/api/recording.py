@@ -98,6 +98,16 @@ def delete_episode(episode_id: str):
     return jsonify({"ok": True})
 
 
+@bp.post("/emergency_stop")
+def emergency_stop():
+    """비상 정지 — 텔레오퍼레이션·전 컨베이어·녹화를 즉시 세운다.
+
+    확인창 없이 즉시 실행되는 전제의 엔드포인트다. 프론트도 confirm 을 띄우지
+    않는다 — 비상 상황에서 망설임을 요구하는 UI 가 더 위험하다.
+    """
+    return jsonify({"ok": True, **current_hub().emergency_stop()})
+
+
 @bp.post("/teleop/start")
 def start_teleop():
     return jsonify({"ok": True, "teleop": current_hub().start_teleop()})

@@ -100,6 +100,8 @@ class ConveyorConfig:
     port: str = ""
     baudrate: int = 115200
     timeout_sec: float = 2.0
+    # 대시보드에 보여줄 사람용 이름 ("공급 벨트" 등). 비면 키 이름을 쓴다.
+    label: str = ""
 
 
 @dataclass(frozen=True)
@@ -118,7 +120,8 @@ class AppConfig:
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     arms: dict[str, ArmConfig] = field(default_factory=dict)
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
-    conveyor: ConveyorConfig = field(default_factory=ConveyorConfig)
+    # 벨트가 여러 대일 수 있다(공급용 + 로봇 작업 영역용). 키가 API 경로의 이름이 된다.
+    conveyors: dict[str, ConveyorConfig] = field(default_factory=dict)
 
 
 def _as_tuple_of_pairs(raw) -> tuple[tuple[float, float], ...]:
@@ -206,15 +209,26 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             ),
         )
 
-    conv_raw = raw.get("conveyor") or {}
-    conveyor = ConveyorConfig(
-        port=conv_raw.get("port") or "",
-        baudrate=int(conv_raw.get("baudrate", 115200)),
-        timeout_sec=float(conv_raw.get("timeout_sec", 2.0)),
-    )
+    # conveyors(복수) 가 우선. 없으면 예전 단일 conveyor 키를 "main" 으로 승격 —
+    # 기존 config.yaml 이 수정 없이 계속 동작해야 한다.
+    def _conveyor(node: dict) -> ConveyorConfig:
+        return ConveyorConfig(
+            port=node.get("port") or "",
+            baudrate=int(node.get("baudrate", 115200)),
+            timeout_sec=float(node.get("timeout_sec", 2.0)),
+            label=node.get("label") or "",
+        )
+
+    conveyors: dict[str, ConveyorConfig] = {}
+    if raw.get("conveyors"):
+        for name, node in raw["conveyors"].items():
+            conveyors[name] = _conveyor(node or {})
+    else:
+        conveyors["main"] = _conveyor(raw.get("conveyor") or {})
 
     return AppConfig(
-        server=server, safety=safety, recording=recording, arms=arms, cameras=cameras, conveyor=conveyor
+        server=server, safety=safety, recording=recording,
+        arms=arms, cameras=cameras, conveyors=conveyors,
     )
 
 
