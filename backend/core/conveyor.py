@@ -56,6 +56,11 @@ class ConveyorController:
             "target_sps": None,
         }
 
+    @property
+    def label(self) -> str:
+        """대시보드 표시용 이름. config 에 없으면 포트라도 보여준다."""
+        return self._cfg.label or self._cfg.port or "conveyor"
+
     # ------------------------------------------------------------------ 연결
     @property
     def connected(self) -> bool:

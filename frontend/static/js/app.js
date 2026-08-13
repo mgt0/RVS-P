@@ -51,10 +51,48 @@ const api = {
   },
 };
 
+/* 장치별 한 줄 설명. 처음 보는 사람이 포트 카드만 보고 역할을 알게 한다.
+   물리 배치 설명은 config.yaml 의 view_dir 주석과 같은 사실을 말해야 한다. */
+const DEVICE_NOTES = {
+  leader: '사람이 손으로 잡고 시연하는 팔 — 토크가 풀려 있어 자유롭게 움직입니다',
+  follower: '리더의 동작을 실시간으로 따라 하는 팔 — 이 움직임이 학습 데이터가 됩니다',
+  cam1: '오른쪽 대각선 위에서 내려다보는 뷰',
+  cam2: '왼쪽 대각선 위에서 내려다보는 뷰',
+  cam3: '왼쪽 대각선 수평 뷰',
+  cam4: '오른쪽 대각선 수평 뷰',
+  cam5: '바닥에서 올려다보는 하단 뷰',
+  global: '전체 작업 공간을 담는 카메라 (아직 미설치)',
+};
+
+/* 대시보드 카테고리. 섹션 v-show 와 사이드바가 이 목록 하나를 공유한다. */
+const TABS = [
+  { id: 'devices', ko: '장치 연결 관리', en: 'DEVICES & PORTS',
+    desc: '로봇팔 · 카메라 · 시리얼 포트 상태' },
+  { id: 'scan',    ko: '실시간 스캔 제어', en: 'LIVE SCAN',
+    desc: '프리뷰 · 텔레오퍼레이션 · 컨베이어' },
+  { id: 'collect', ko: '데이터 수집 · 라벨링', en: 'COLLECT & LABEL',
+    desc: '에피소드 녹화와 사후 편집' },
+  { id: 'train',   ko: 'AI 모방학습 지표', en: 'TRAINING METRICS',
+    desc: 'ACT 학습 곡선 · 데이터 준비도' },
+  { id: 'inspect', ko: '3D 형상 검사', en: 'INSPECTION',
+    desc: 'CAD 대조 · 불량 부위 하이라이트' },
+];
+
 createApp({
   setup() {
     /* ---------------- 상태 ---------------- */
     const ports = reactive({ arms: [], cameras: [], connected_count: 0, total_count: 7 });
+
+    /* 활성 카테고리. v-if 가 아니라 v-show 로 전환한다 — v-if 로 떼어내면
+       MJPEG <img> 가 재연결되고 차트 canvas ref 가 사라져 상태가 초기화된다. */
+    const tab = ref('scan');
+
+    function setTab(id) {
+      tab.value = id;
+      // display:none 상태의 canvas 는 폭이 0 이라 차트가 0px 로 그려져 있다.
+      // 탭이 보이게 된 다음 틱에 resize 를 쏘면 기존 리스너가 다시 그린다.
+      Vue.nextTick(() => window.dispatchEvent(new Event('resize')));
+    }
 
     const status = reactive({
       recording: {
@@ -74,12 +112,10 @@ createApp({
       simulate: false,
     });
 
-    // 컨베이어(ESP32+TB6600). /api/conveyor/* 응답을 그대로 담는다.
-    const conveyor = reactive({
-      connected: false, running: false, enabled: true, dir: 'cw', rpm: 0, target_rpm: null,
-    });
-    // 목표 속도(모터축 RPM). 기본값은 확실히 도는 저속 — 올리면서 탈조 한계를 찾는다.
-    const conveyorRpm = ref(2);
+    /* 컨베이어 벨트 목록(공급 벨트 + 로봇 작업 벨트).
+       각 항목 = 서버 상태 + rpmInput(사용자가 입력 중인 목표 RPM).
+       rpmInput 기본 2 는 확실히 도는 저속 — 올리면서 탈조 한계를 찾는다. */
+    const conveyors = ref([]);
 
     const form = reactive({ episodeId: '', objectId: '', label: 'good', defectType: null });
     // 저장된 에피소드 목록. 행을 그대로 v-model 로 편집하고 SAVE 시 서버로 보낸다.
@@ -93,6 +129,7 @@ createApp({
     /* ---- ACT 학습 메트릭 상태 (실시간) ---- */
     const lossChart = ref(null);      // <canvas> ref — 손실 곡선
     const successChart = ref(null);   // <canvas> ref — 성공률 곡선
+    const maeChart = ref(null);       // <canvas> ref — VAL MAE 곡선
     const training = reactive({
       params: { epochs: 50, threshold_deg: 5.0, lr: 0.0001, demo: true },
       state: 'IDLE',
@@ -137,6 +174,88 @@ createApp({
       if (!form.episodeId.trim() || !form.objectId.trim()) return false;
       if (form.label === 'defect' && !form.defectType) return false;
       return true;
+    });
+
+    /* 검사(라벨링)된 물체 기준 양품/불량 비율 — 도넛 그래프용.
+       dash 는 SVG stroke-dasharray: 원둘레 × 불량 비율. */
+    const inspectionShare = computed(() => {
+      const { good, defect } = objectCounts.value;
+      const total = good + defect;
+      const ratio = total ? defect / total : 0;
+      const C = 2 * Math.PI * 44;      // SVG 원 반지름 44 기준 둘레
+      return {
+        good, defect, total, ratio,
+        goodRatio: total ? good / total : 0,
+        dash: `${(C * ratio).toFixed(2)} ${C.toFixed(2)}`,
+      };
+    });
+
+    /* 비상 정지. confirm 을 띄우지 않는다 — 비상 상황에서 망설임을 요구하는
+       UI 가 더 위험하다. 서버가 텔레오퍼·전 벨트·녹화를 한 번에 세운다. */
+    async function emergencyStop() {
+      try {
+        await api.post('/api/emergency_stop');
+        notify('비상 정지 — 텔레오퍼레이션 · 컨베이어 · 녹화를 모두 세웠습니다', 'error');
+        // 폴링 주기를 기다리지 않고 화면을 즉시 실제 상태로
+        try {
+          const [st, cv] = await Promise.all([
+            api.get('/api/status'), api.get('/api/conveyor/status'),
+          ]);
+          Object.assign(status, {
+            recording: st.recording, leader: st.leader, follower: st.follower,
+            teleop: st.teleop, cameras: st.cameras,
+          });
+          applyConveyors(cv.conveyors);
+        } catch { /* 폴링이 곧 따라잡는다 */ }
+      } catch (err) {
+        notify(`비상 정지 실패: ${err.message}`, 'error');
+      }
+    }
+
+    /* ==================== 모방학습 진단 지표 ====================
+       서버가 이미 주는 학습 곡선(records)만으로 파생 계산한다.
+       없는 값을 지어내지 않는 것이 원칙 — 전부 재계산 가능한 수치다. */
+    const ilMetrics = computed(() => {
+      const recs = training.records;
+      if (!recs.length) return null;
+
+      const first = recs[0];
+      const last = recs[recs.length - 1];
+      const lastVal = last.val_loss ?? last.train_loss;
+
+      // 첫 에폭 대비 손실이 얼마나 줄었나 — "학습이 되고 있긴 한가"의 첫 질문
+      const improvement = first.train_loss > 0 ? 1 - last.train_loss / first.train_loss : 0;
+
+      // 일반화 갭: val 이 train 보다 얼마나 나쁜가. 커지면 시연 데이터 암기(과적합).
+      const gap = lastVal - last.train_loss;
+      const gapRatio = last.train_loss > 0 ? gap / last.train_loss : 0;
+
+      // 최근 5 에폭의 val 개선율로 수렴/정체/과적합을 가른다.
+      let state = { text: training.running ? '학습 중' : '대기', warn: false };
+      if (recs.length >= 6) {
+        const prev = recs[recs.length - 6];
+        const prevVal = prev.val_loss ?? prev.train_loss;
+        const recent = prevVal > 0 ? (prevVal - lastVal) / prevVal : 0;
+        if (recent < -0.01 && gapRatio > 0.3) state = { text: '과적합 의심', warn: true };
+        else if (recent < 0.02) state = { text: '수렴 · 정체', warn: false };
+        else state = { text: '개선 중', warn: false };
+      }
+      if (training.state === 'DONE') state = { ...state, text: '완료 · ' + state.text };
+
+      return { improvement, gap, gapRatio, state };
+    });
+
+    /* 데이터 준비도. ACT 는 태스크당 50 에피소드, 분류기는 클래스당 물체 50개가
+       통상적인 하한이다(같은 물체 반복은 분류기엔 도움이 안 된다). */
+    const readiness = computed(() => {
+      const mk = (label, n, goal) => ({
+        label, n, goal, pct: Math.min(100, Math.round((n / goal) * 100)),
+      });
+      return [
+        mk('ACT 에피소드', episodes.value.length, 50),
+        mk('양품 물체', objectCounts.value.good, 50),
+        mk('불량 물체', objectCounts.value.defect, 50),
+      ];
     });
 
     /* 스트림 URL 은 카메라 이름만으로 정해지는 상수 문자열이라 여기서 바로 만든다.
@@ -260,68 +379,74 @@ createApp({
       }
     }
 
-    const conveyorLabel = computed(() => {
-      if (!conveyor.connected) return 'PORT CLOSED';
-      if (!conveyor.enabled) return 'DISABLED';
-      if (!conveyor.running) return 'IDLE';
-      return `${Number(conveyor.rpm || 0).toFixed(1)} RPM`;
-    });
-
-    function applyConveyor(data) {
-      if (!data) return;
-      ['connected', 'running', 'enabled', 'dir', 'rpm', 'target_rpm'].forEach((key) => {
-        if (data[key] !== undefined) conveyor[key] = data[key];
-      });
-      // 서버가 아는 목표 속도로 입력칸을 맞춘다(다른 탭이나 시리얼 콘솔에서 바꿨을 수 있다).
-      if (data.target_rpm) conveyorRpm.value = Math.round(data.target_rpm * 100) / 100;
+    function beltStatusLabel(belt) {
+      if (!belt.connected) return 'PORT CLOSED';
+      if (!belt.enabled) return 'DISABLED';
+      if (!belt.running) return 'IDLE';
+      return `${Number(belt.rpm || 0).toFixed(1)} RPM`;
     }
 
-    async function conveyorCall(fn, message) {
+    /* 서버의 전 벨트 스냅샷을 병합한다. 사용자가 입력 중인 rpmInput 은
+       폴링이 덮어쓰지 않도록 보존한다(입력 도중 값이 되돌아가면 미치게 답답하다). */
+    function applyConveyors(list) {
+      if (!Array.isArray(list)) return;
+      const prev = Object.fromEntries(conveyors.value.map((b) => [b.name, b]));
+      conveyors.value = list.map((b) => ({
+        rpmInput: prev[b.name]?.rpmInput
+          ?? (b.target_rpm ? Math.round(b.target_rpm * 100) / 100 : 2),
+        ...b,
+      }));
+    }
+
+    /* 명령 응답(벨트 하나의 평면 상태)을 해당 벨트에만 병합 */
+    function applyBelt(data) {
+      const belt = conveyors.value.find((b) => b.name === data.name);
+      if (belt) Object.assign(belt, data);
+    }
+
+    async function beltCall(belt, fn, message) {
       busy.conveyor = true;
       try {
-        applyConveyor(await fn());
-        if (message) notify(message);
+        applyBelt(await fn());
+        if (message) notify(`${belt.label || belt.name} — ${message}`);
       } catch (err) {
-        notify(err.message, 'error');
+        notify(`${belt.label || belt.name}: ${err.message}`, 'error');
       } finally {
         busy.conveyor = false;
       }
     }
 
-    async function startConveyor() {
+    async function startBelt(belt) {
       // 화면의 RPM 을 먼저 반영하고 출발한다. 버튼만 눌러 이전 속도로 도는 것보다
       // 눈에 보이는 값과 실제가 같은 편이 안전하다.
-      await conveyorCall(async () => {
-        await api.post('/api/conveyor/speed', { rpm: conveyorRpm.value });
-        return api.post('/api/conveyor/start');
-      }, `컨베이어 시작 — ${conveyorRpm.value} RPM`);
+      await beltCall(belt, async () => {
+        await api.post(`/api/conveyor/${belt.name}/speed`, { rpm: belt.rpmInput });
+        return api.post(`/api/conveyor/${belt.name}/start`);
+      }, `시작 · ${belt.rpmInput} RPM`);
     }
 
-    async function stopConveyor() {
-      await conveyorCall(() => api.post('/api/conveyor/stop'), '컨베이어 정지');
+    async function stopBelt(belt) {
+      await beltCall(belt, () => api.post(`/api/conveyor/${belt.name}/stop`), '정지');
     }
 
-    async function setConveyorSpeed() {
-      await conveyorCall(
-        () => api.post('/api/conveyor/speed', { rpm: conveyorRpm.value }),
-        `목표 속도 ${conveyorRpm.value} RPM`,
-      );
+    async function setBeltSpeed(belt) {
+      await beltCall(belt,
+        () => api.post(`/api/conveyor/${belt.name}/speed`, { rpm: belt.rpmInput }),
+        `목표 속도 ${belt.rpmInput} RPM`);
     }
 
-    async function toggleConveyorDir() {
+    async function toggleBeltDir(belt) {
       // 구동 중이면 펌웨어가 잠깐 멈춘 뒤 저속에서 다시 가속한다(부하 상태 즉시 반전 = 탈조).
-      const next = conveyor.dir === 'ccw' ? 'cw' : 'ccw';
-      await conveyorCall(
-        () => api.post('/api/conveyor/dir', { direction: next }),
-        next === 'cw' ? '정방향으로 전환' : '역방향으로 전환',
-      );
+      const next = belt.dir === 'ccw' ? 'cw' : 'ccw';
+      await beltCall(belt,
+        () => api.post(`/api/conveyor/${belt.name}/dir`, { direction: next }),
+        next === 'cw' ? '정방향 전환' : '역방향 전환');
     }
 
-    async function releaseConveyor() {
-      await conveyorCall(
-        () => api.post('/api/conveyor/release'),
-        'COM 포트 해제 — 이제 펌웨어를 업로드할 수 있습니다',
-      );
+    async function releaseBelt(belt) {
+      await beltCall(belt,
+        () => api.post(`/api/conveyor/${belt.name}/release`),
+        'COM 포트 해제 — 펌웨어 업로드 가능');
     }
 
     function setLabel(value) {
@@ -446,7 +571,7 @@ createApp({
       // 컨베이어 상태는 포트를 열지 않고 읽는다(release 한 포트를 폴링이 다시 잡으면
       // ESP32 가 리셋돼 돌던 모터가 멈춘다). 서버 쪽에서 보장한다.
       try {
-        applyConveyor(await api.get('/api/conveyor/status'));
+        applyConveyors((await api.get('/api/conveyor/status')).conveyors);
       } catch { /* 무시 */ }
       portsTimer = setTimeout(pollPorts, 5000);
     }
@@ -567,21 +692,32 @@ createApp({
       const recs = training.records;
       if (!recs.length) return;
 
-      const ink = getComputedStyle(document.documentElement).getPropertyValue('--ink').trim();
-      const sunset = getComputedStyle(document.documentElement).getPropertyValue('--accent-sunset').trim();
+      const css = getComputedStyle(document.documentElement);
+      const ink = css.getPropertyValue('--ink').trim();
+      const bodyColor = css.getPropertyValue('--body').trim();
+      const blue = css.getPropertyValue('--accent-blue').trim();
 
-      // 손실 곡선: train(실선 흰색) vs val(점선 오렌지)
+      // 손실 곡선: train(블루 실선 + 면) vs val(중립 점선).
+      // 오렌지는 경고 전용색이라 데이터 곡선에 쓰지 않는다.
       if (lossChart.value) {
         Chart.drawLines(lossChart.value, [
-          { points: recs.map((r) => ({ x: r.epoch, y: r.train_loss })), color: ink, dashed: false },
-          { points: recs.map((r) => ({ x: r.epoch, y: r.val_loss ?? r.train_loss })), color: sunset, dashed: true },
+          { points: recs.map((r) => ({ x: r.epoch, y: r.train_loss })), color: blue },
+          { points: recs.map((r) => ({ x: r.epoch, y: r.val_loss ?? r.train_loss })),
+            color: bodyColor, dashed: true, fill: false },
         ]);
       }
 
-      // 성공률 곡선 (0~1). 오렌지 실선 하나.
+      // 성공률 곡선 (0~1)
       if (successChart.value) {
         Chart.drawLines(successChart.value, [
-          { points: recs.map((r) => ({ x: r.epoch, y: r.val_success_rate ?? 0 })), color: sunset, dashed: false },
+          { points: recs.map((r) => ({ x: r.epoch, y: r.val_success_rate ?? 0 })), color: blue },
+        ]);
+      }
+
+      // VAL MAE 곡선 — 관절 각도가 평균 몇 도 틀리는지의 추세
+      if (maeChart.value) {
+        Chart.drawLines(maeChart.value, [
+          { points: recs.map((r) => ({ x: r.epoch, y: r.val_mae_deg ?? 0 })), color: ink },
         ]);
       }
     }
@@ -767,16 +903,19 @@ createApp({
     });
 
     return {
+      tabs: TABS, tab, setTab,
       ports, status, meta, form, busy, toasts,
       recording, connectedCount, totalCount, allConnected, canStart, cameraViews, objectCounts,
       refreshPorts, testConnections, identify, toggleTeleop, goHome,
-      conveyor, conveyorRpm, conveyorLabel, startConveyor, stopConveyor,
-      setConveyorSpeed, toggleConveyorDir, releaseConveyor,
+      conveyors, beltStatusLabel, startBelt, stopBelt, setBeltSpeed,
+      toggleBeltDir, releaseBelt,
       setLabel, startRecording, stopRecording, dismiss, fmtDeg,
       // 에피소드 관리
       episodes, refreshEpisodes, saveEpisode, deleteEpisode,
-      // ACT 학습 메트릭
-      training, lossChart, successChart, startTraining, stopTraining, fmtNum, fmtPct,
+      // ACT 학습 메트릭 · 모방학습 진단
+      training, lossChart, successChart, maeChart, startTraining, stopTraining, fmtNum, fmtPct,
+      ilMetrics, readiness, deviceNote: (key) => DEVICE_NOTES[key] || '',
+      inspectionShare, emergencyStop,
       // 3D 스캔 검사
       scan, viewerCanvas, refreshObjects, reconstruct, reconstructDemo, resetView,
       captureBackground, modelInput, pickModelFile, uploadModel, isCadModel,

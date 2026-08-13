@@ -123,8 +123,17 @@ recording:
   jpeg_quality: 90
   queue_maxsize: 512
 
-conveyor:
-  # ESP32(TB6600+NEMA17)가 USB로 꽂히는 COM 포트. 장치관리자에서 확인.
-  port: COM12
-  baudrate: 115200
-  timeout_sec: 2.0
+# 컨베이어 벨트. 키(feed/work)가 API 경로의 이름이 된다: /api/conveyor/feed/start
+# ESP32(TB6600+NEMA17)가 USB로 꽂히는 COM 포트는 장치관리자에서 확인.
+# 두 번째 벨트를 달면 그 보드의 COM 포트를 work.port 에 채우면 끝 — 코드 수정 불필요.
+conveyors:
+  feed:
+    label: 공급 벨트
+    port: COM12
+    baudrate: 115200
+    timeout_sec: 2.0
+  work:
+    label: 로봇 작업 벨트
+    port: ""          # 아직 미설치. 비워두면 해당 벨트만 503, 나머지는 정상 동작.
+    baudrate: 115200
+    timeout_sec: 2.0

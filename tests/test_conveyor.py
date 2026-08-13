@@ -227,7 +227,8 @@ def client():
     """simulate 컨트롤러를 붙인 최소 Flask 앱. 카메라/arm 을 끌고 오지 않는다."""
     app = Flask(__name__)
     controller = ConveyorController(ConveyorConfig(port="SIM"), simulate=True)
-    app.extensions["omx_hub"] = SimpleNamespace(conveyor=controller)
+    # 벨트 여러 대 구조. 이름 없는 예전 경로는 첫 벨트로 위임된다.
+    app.extensions["omx_hub"] = SimpleNamespace(conveyors={"main": controller})
     app.register_blueprint(conveyor_api.bp)
     return app.test_client()
 
@@ -246,10 +247,19 @@ def test_api_speed_and_dir(client):
     assert client.post("/api/conveyor/dir", json={"direction": "ccw"}).get_json()["dir"] == "ccw"
 
 
-def test_api_status_는_GET(client):
+def test_api_status_는_전_벨트_목록(client):
     body = client.get("/api/conveyor/status").get_json()
     assert body["ok"] is True
-    assert "running" in body
+    belts = body["conveyors"]
+    assert len(belts) == 1
+    assert belts[0]["name"] == "main"
+    assert "running" in belts[0]
+
+
+def test_이름_경로도_같은_벨트를_제어한다(client):
+    # /api/conveyor/main/start 와 /api/conveyor/start 는 같은 벨트다
+    assert client.post("/api/conveyor/main/start").get_json()["running"] is True
+    assert client.post("/api/conveyor/stop").get_json()["running"] is False
 
 
 def test_api_release(client):

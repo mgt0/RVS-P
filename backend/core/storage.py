@@ -321,11 +321,26 @@ class DatasetIndex:
             return meta
 
     def delete(self, episode_id: str) -> None:
-        target = self._meta_path(episode_id).parent
+        meta_file = self._meta_path(episode_id)
+        target = meta_file.parent
         with self._lock:
+            # 삭제 전에 라벨/물체를 읽어둔다 — 지우고 나면 알 수 없다.
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
             shutil.rmtree(target)
-            # 분류 이미지는 남긴다. 같은 object_id 의 다른 에피소드가 함께 쓰는 폴더다.
             logger.warning("에피소드 삭제: %s", target)
+
+            # 같은 (label, object_id) 를 참조하는 형제 에피소드가 남아 있으면
+            # 분류 이미지는 공유 자산이라 둔다. 마지막 참조가 사라졌으면 함께
+            # 지운다 — 남겨두면 3D 검사 드롭다운에 유령 물체로 계속 뜬다.
+            still_referenced = any(
+                m["label"] == meta["label"] and m["object_id"] == meta["object_id"]
+                for m in self.list()
+            )
+            if not still_referenced:
+                stills = self._root / "classification" / meta["label"] / meta["object_id"]
+                if stills.exists():
+                    shutil.rmtree(stills, ignore_errors=True)
+                    logger.warning("고아 분류 이미지 삭제: %s", stills)
 
     def _meta_path(self, episode_id: str) -> Path:
         episode_id = validate_id(episode_id, "episode_id")
