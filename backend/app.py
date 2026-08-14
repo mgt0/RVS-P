@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from flask import Flask, jsonify, send_from_directory
@@ -23,9 +24,42 @@ from .config import AppConfig, load_config
 from .core.hardware import HardwareHub
 from .utils.errors import OmxError
 
-FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+FRONTEND_DIR = PROJECT_DIR / "frontend"
+# 서버를 누가 띄웠든 로그는 항상 이 파일에도 남는다. 터미널 스크롤백은 그 창을
+# 띄운 사람만 볼 수 있어서, 문제가 생겼을 때 로그를 손으로 옮겨 붙여야 했다.
+LOG_PATH = PROJECT_DIR / "logs" / "server.log"
 
 logger = logging.getLogger(__name__)
+
+
+LOG_FORMAT = "%(asctime)s %(levelname)-7s [%(threadName)s] %(name)s: %(message)s"
+
+
+def enable_file_logging() -> Path | None:
+    """로그를 logs/server.log 에도 남긴다. 5MB 씩 3개까지 돌려 쓴다.
+
+    실제로 서버를 띄우는 run.py 에서만 부른다. create_app() 에서 부르면 테스트가
+    돌 때마다 pytest 로그가 같은 파일에 섞여 정작 필요할 때 읽기 어려워진다.
+
+    터미널 스크롤백은 그 창을 띄운 사람만 볼 수 있다. 파일로 남겨두면 서버를
+    누가 띄웠든 로그를 같이 볼 수 있다(scripts/server_status.py).
+    """
+    root = logging.getLogger()
+    if any(isinstance(h, RotatingFileHandler) for h in root.handlers):
+        return LOG_PATH
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            LOG_PATH, maxBytes=5_000_000, backupCount=3, encoding="utf-8"
+        )
+        handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        root.addHandler(handler)
+        return LOG_PATH
+    except OSError:
+        # 로그 파일을 못 열어도 서버는 떠야 한다(권한/디스크 문제).
+        logger.warning("로그 파일을 열 수 없습니다: %s", LOG_PATH, exc_info=True)
+        return None
 
 
 def create_app(config: AppConfig | None = None) -> Flask:
@@ -33,7 +67,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
 
     logging.basicConfig(
         level=logging.DEBUG if cfg.server.debug else logging.INFO,
-        format="%(asctime)s %(levelname)-7s [%(threadName)s] %(name)s: %(message)s",
+        format=LOG_FORMAT,
     )
 
     app = Flask(__name__, static_folder=None)
