@@ -97,6 +97,123 @@ class TestReconstruction:
             reconstruct_from_views({"front": np.zeros((64, 64, 3), np.uint8)})
 
 
+class TestTextureProjection:
+    """실제 촬영 픽셀을 표면에 입히는 경로.
+
+    회귀 방지 대상: 배경색이 물체에 번지는 것, 가려진 면이 앞면 색을 가져오는 것.
+    """
+
+    # 배경은 무채색 회색이어야 한다. 실루엣 추출이 채도 기반 폴백을 갖고 있어서
+    # 배경을 진한 초록 같은 고채도 색으로 두면 배경 자체가 물체로 잡힌다
+    # (실측: 화면의 98% 를 물체로 판정). 물체는 카메라마다 다른 색으로 칠해
+    # 어느 뷰에서 색을 가져왔는지 구분할 수 있게 한다.
+    BACKGROUND_BGR = (180, 180, 180)
+    VIEW_BGR = {
+        "cam1": (40, 40, 220),    # 빨강
+        "cam2": (220, 40, 40),    # 파랑
+        "cam3": (40, 220, 220),   # 노랑
+        "cam4": (220, 40, 220),   # 자홍
+        # 흰색·회색을 쓰면 '배경이 섞여 채도가 죽은 것'과 구분할 수 없어
+        # 다섯 뷰 모두 채도가 높은 색으로 둔다.
+        "cam5": (40, 220, 120),   # 연두
+    }
+
+    def _views(self, size=128):
+        import cv2
+        views, backgrounds = {}, {}
+        for name, color in self.VIEW_BGR.items():
+            bg = np.full((size, size, 3), self.BACKGROUND_BGR, np.uint8)
+            img = bg.copy()
+            cv2.circle(img, (size // 2, size // 2), size // 3, color, -1)
+            views[name] = img
+            backgrounds[name] = bg
+        return views, backgrounds
+
+    def _result(self):
+        views, backgrounds = self._views()
+        return reconstruct_from_views(
+            views, resolution=32, backgrounds=backgrounds,
+            classification={"label": "good"},
+        )
+
+    def test_촬영한_색이_표면에_입혀진다(self):
+        colors = np.array(self._result().vertex_colors)
+        assert len(colors) > 0
+        # 전부 중립 회색이면 텍스처가 아예 적용되지 않은 것이다.
+        from backend.core.reconstruct3d import NEUTRAL_GRAY
+        textured = ~np.all(np.isclose(colors, NEUTRAL_GRAY, atol=0.02), axis=1)
+        assert textured.mean() > 0.5, "정점 대부분에 촬영 색이 입혀지지 않았습니다"
+
+    def test_실루엣_밖_픽셀은_유효하지_않다(self):
+        """배경 번짐 방지의 핵심. 텍스처는 바운딩박스로 자른 사각형이라 물체
+        주변 배경이 그대로 들어 있고, 걸러내지 않으면 테두리 정점이 그 색을
+        집어와 부품 가장자리에 색 띠가 생긴다.
+        """
+        from backend.core.reconstruct3d import _sample_bilinear, _view_texture
+
+        size = 64
+        # 왼쪽 절반만 물체(빨강), 오른쪽 절반은 배경(초록)
+        img = np.full((size, size, 3), (40, 200, 40), np.uint8)
+        img[:, : size // 2] = (40, 40, 220)
+        mask = np.zeros((size, size), np.uint8)
+        mask[:, : size // 2] = 255
+
+        tex, tex_mask = _view_texture(img, mask, resolution=32)
+        assert tex is not None
+
+        # 텍스처 좌표계에서 왼쪽(물체) / 오른쪽(배경) 지점을 각각 찍는다.
+        # 바운딩박스가 물체에 딱 맞게 잘리고 정사각으로 패딩되므로, 가로 중앙보다
+        # 확실히 오른쪽인 지점은 패딩(=배경)이다.
+        fx = np.array([8.0, 30.0], dtype=np.float32)
+        fy = np.array([16.0, 16.0], dtype=np.float32)
+
+        sample, inside = _sample_bilinear(tex, tex_mask, fx, fy)
+
+        assert inside[0], "물체 안쪽 지점이 무효로 판정됐습니다"
+        assert not inside[1], "배경 지점이 유효로 판정됐습니다 — 색이 번집니다"
+        # 유효 지점의 색은 물체 색(빨강: R 이 가장 크다)이어야 한다
+        assert sample[0][0] > sample[0][1] and sample[0][0] > sample[0][2]
+
+    def test_파이프라인_결과는_촬영한_색만_쓴다(self):
+        """색이 입혀진 정점은 5뷰에 실제로 찍힌 색 중 하나여야 한다.
+
+        배경(무채색)이 섞이면 채도가 떨어져 어느 물체 색과도 안 맞게 된다.
+        """
+        from backend.core.reconstruct3d import NEUTRAL_GRAY
+
+        colors = np.array(self._result().vertex_colors)
+        textured = ~np.all(np.isclose(colors, NEUTRAL_GRAY, atol=0.02), axis=1)
+        assert textured.any()
+
+        # 촬영 색(BGR → RGB 로 뒤집어 비교). 여러 뷰를 섞으므로 정확히 일치하진
+        # 않지만, 배경이 섞이지 않았다면 채도는 살아 있어야 한다.
+        painted = colors[textured]
+        saturation = painted.max(axis=1) - painted.min(axis=1)
+        washed_out = saturation < 0.15
+        assert washed_out.mean() < 0.05, (
+            f"정점 {washed_out.mean() * 100:.0f}% 가 무채색에 가깝습니다 — "
+            "배경색이 섞였을 가능성이 높습니다"
+        )
+
+    def test_보이지_않는_정점은_색을_지어내지_않는다(self):
+        """가림 판정이 없으면 뒤쪽 정점이 앞면 픽셀을 가져와 전부 칠해진다."""
+        from backend.core.reconstruct3d import (
+            NEUTRAL_GRAY, _visible_by_zbuffer,
+        )
+
+        # 같은 픽셀에 깊이가 다른 정점 두 개 → 가까운 쪽만 보여야 한다.
+        fx = np.array([1.0, 1.0, 5.0], dtype=np.float32)
+        fy = np.array([1.0, 1.0, 5.0], dtype=np.float32)
+        depth = np.array([0.4, -0.4, 0.1], dtype=np.float32)   # 클수록 카메라에 가깝다
+
+        visible = _visible_by_zbuffer(fx, fy, depth, size=8, tol=0.01)
+
+        assert visible[0], "가장 가까운 정점이 가려진 것으로 판정됐습니다"
+        assert not visible[1], "뒤쪽 정점이 보이는 것으로 판정됐습니다"
+        assert visible[2], "겹치지 않은 정점까지 가려진 것으로 판정됐습니다"
+        assert NEUTRAL_GRAY == 0.72   # 색을 못 정한 정점의 기본값
+
+
 # --------------------------------------------------------------- 학습 API
 @pytest.fixture(scope="module")
 def client(tmp_path_factory):

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -344,6 +345,80 @@ def test_가동_범위_밖_위치는_ValidationError(fake_serial, bad):
     lm = _lm(fake_serial, FakeCalibration(), stroke=640.0)
     with pytest.raises(ValidationError):
         lm.move_to_mm(bad)
+
+
+# ------------------------------------------------- 한 축이 막혀도 나머지는 산다
+def test_한_축이_포트를_붙잡아도_다른_축이_무한대기하지_않는다(fake_serial):
+    """회귀: 세 축이 한 락을 공유해, 한 명령이 막히면 화면 전체가 '대기' 로 굳었다.
+
+    실제로 그랬다 — 펌웨어 업로드가 포트를 잡고 있는 동안 모든 버튼이 응답을
+    잃었다. 이제는 기다리다 끊고 이유를 준다.
+    """
+    import threading
+
+    from backend.core import conveyor as mod
+
+    feed = ConveyorController(ConveyorConfig(port="COM11", motor=1, timeout_sec=0.2))
+    lm = ConveyorController(ConveyorConfig(port="COM11", motor=3, timeout_sec=0.2))
+    feed.start()                       # 포트를 연다(둘이 공유한다)
+
+    held = threading.Event()
+    done = threading.Event()
+
+    def hog():
+        with feed._lock:               # 다른 명령이 포트를 오래 붙잡은 상황
+            held.set()
+            done.wait(timeout=5)
+
+    t = threading.Thread(target=hog, daemon=True)
+    t.start()
+    held.wait(timeout=2)
+
+    try:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(mod, "_CMD_LOCK_TIMEOUT_SEC", 0.2)   # 테스트를 빨리 끝낸다
+            start = time.monotonic()
+            with pytest.raises(ConveyorError, match="붙잡혀"):
+                lm.start()
+            waited = time.monotonic() - start
+        assert waited < 2.0, f"무한 대기하면 안 된다(실제 {waited:.1f}초)"
+    finally:
+        done.set()
+        t.join(timeout=2)
+
+
+def test_명령_중_상태_폴링은_기다리지_않고_캐시를_준다(fake_serial):
+    """폴링이 명령 뒤에 줄을 서면 폴링끼리 쌓여 버튼 요청이 뒤로 밀린다."""
+    import threading
+
+    from backend.core import conveyor as mod
+
+    lm = ConveyorController(ConveyorConfig(port="COM11", motor=3, timeout_sec=0.2))
+    lm.start()
+
+    held = threading.Event()
+    done = threading.Event()
+
+    def hog():
+        with lm._lock:
+            held.set()
+            done.wait(timeout=5)
+
+    t = threading.Thread(target=hog, daemon=True)
+    t.start()
+    held.wait(timeout=2)
+
+    try:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(mod, "_STATUS_LOCK_TIMEOUT_SEC", 0.1)
+            start = time.monotonic()
+            state = lm.status()          # 예외가 아니라 캐시를 준다
+            waited = time.monotonic() - start
+        assert waited < 1.0, f"폴링은 기다리면 안 된다(실제 {waited:.1f}초)"
+        assert state["stale"] is True    # 캐시라고 표시된다
+    finally:
+        done.set()
+        t.join(timeout=2)
 
 
 # --------------------------------------------------------------------- 오류

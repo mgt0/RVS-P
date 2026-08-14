@@ -82,12 +82,13 @@ const bool DIR_ACTIVE_LOW = false;
 const bool ENA_ACTIVE_LOW = false;
 
 // ── 모터/드라이버 제원 ────────────────────────────────────────────────
-// 1.8도 모터 = 200 full step/rev. MICROSTEP 은 각 TB6600 DIP 스위치(S1~S3)와
-// 반드시 일치시켜야 한다. 세 드라이버 모두 같은 DIP 설정을 쓴다는 전제다 —
-// LM 가이드 쪽만 다르게 놓았다면 이 값을 모터별 배열로 쪼갠다.
+// 1.8도 모터 = 200 full step/rev.
+//
+// 마이크로스텝은 각 TB6600 의 DIP 스위치(S1~S3)와 반드시 일치해야 한다. 값이
+// 틀리면 명령과 실제가 그 비율만큼 어긋난다 — 실측 2026-08-14: LM 드라이버가
+// 16 인데 펌웨어가 8 이라 찍은 거리의 절반만 갔다. 그래서 축마다 따로 둔다
+// (이 리그는 컨베이어 8, LM 16 으로 서로 다르다).
 const float MOTOR_STEPS_PER_REV = 200.0;
-const float MICROSTEP           = 8;
-const float STEPS_PER_REV       = MOTOR_STEPS_PER_REV * MICROSTEP;
 
 // ── 속도 ──────────────────────────────────────────────────────────────
 // 주의: 스텝모터는 1000RPM 부근부터 토크가 급락한다. 실제 한계는 부하 걸고 찾는다.
@@ -122,6 +123,8 @@ const uint32_t SYSTEM_MEMORY_ADDR = 0x1FFF0000;
 // ── 모터 3축 ──────────────────────────────────────────────────────────
 struct Motor {
   uint32_t pulPin, dirPin, enaPin;
+  // 이 축 드라이버의 DIP 설정. 1회전에 필요한 펄스 = 200 × microstep.
+  float microstep;
   bool running;
   bool enabled;
   bool dirCw;
@@ -144,11 +147,14 @@ struct Motor {
 
 const int NUM_MOTORS = 3;
 Motor motors[NUM_MOTORS] = {
-  // pul, dir, ena,                                        pos,lim, seeking,target
-  { PA0, PA1, PA2, false, true, true, START_SPS, 8000.0, 0, 0, 0, false, 0, 0, false, 0 },  // M1 컨베이어 1
-  { PA3, PA6, PA7, false, true, true, START_SPS, 8000.0, 0, 0, 0, false, 0, 0, false, 0 },  // M2 컨베이어 2
-  { PB0, PB1, PA8, false, true, true, START_SPS, 8000.0, 0, 0, 0, false, 0, 0, false, 0 },  // M3 LM 가이드
+  // pul, dir, ena, microstep(DIP),                        pos,lim, seeking,target
+  { PA0, PA1, PA2,  8, false, true, true, START_SPS, 8000.0, 0, 0, 0, false, 0, 0, false, 0 },  // M1 컨베이어 1
+  { PA3, PA6, PA7,  8, false, true, true, START_SPS, 8000.0, 0, 0, 0, false, 0, 0, false, 0 },  // M2 컨베이어 2
+  { PB0, PB1, PA8, 16, false, true, true, START_SPS, 8000.0, 0, 0, 0, false, 0, 0, false, 0 },  // M3 LM 가이드
 };
+
+// 이 축에서 1회전에 필요한 펄스 수.
+float stepsPerRev(const Motor &m) { return MOTOR_STEPS_PER_REV * m.microstep; }
 
 // 분류 게이트 서보(보드에 1개). PB3 을 Servo 라이브러리(전용 타이머 인터럽트)로 구동 —
 // 하드웨어 PWM 은 모터 펄스 타이머들과 주파수를 공유할 수 없어서다.
@@ -243,8 +249,8 @@ void enterDfu() {
 }
 #endif  // ENABLE_SOFT_DFU
 
-float spsToRpm(float sps) { return sps * 60.0 / STEPS_PER_REV; }
-float rpmToSps(float rpm) { return rpm * STEPS_PER_REV / 60.0; }
+float spsToRpm(const Motor &m, float sps) { return sps * 60.0 / stepsPerRev(m); }
+float rpmToSps(const Motor &m, float rpm) { return rpm * stepsPerRev(m) / 60.0; }
 
 void printStatus(int mi) {
   Motor &m = motors[mi];
@@ -255,16 +261,16 @@ void printStatus(int mi) {
   Serial.print(",\"dir\":\"");     Serial.print(m.dirCw ? "cw" : "ccw");
   Serial.print("\",\"sps\":");     Serial.print(m.running ? m.currentSps : 0.0, 1);
   Serial.print(",\"target_sps\":");Serial.print(m.targetSps, 1);
-  Serial.print(",\"rpm\":");       Serial.print(spsToRpm(m.running ? m.currentSps : 0.0), 2);
-  Serial.print(",\"target_rpm\":");Serial.print(spsToRpm(m.targetSps), 2);
-  Serial.print(",\"microstep\":"); Serial.print((int)MICROSTEP);
-  Serial.print(",\"steps_per_rev\":"); Serial.print((int)STEPS_PER_REV);
-  if (m.limitSteps > 0) {
-    // 소프트 리밋을 쓰는 축만 위치를 싣는다 — 대시보드가 이 키의 유무로
-    // '원점/리밋 UI 를 붙일 축'을 고른다(벨트에는 안 붙는다).
-    Serial.print(",\"pos_rev\":");   Serial.print(m.posSteps / STEPS_PER_REV, 3);
-    Serial.print(",\"limit_rev\":"); Serial.print(m.limitSteps / STEPS_PER_REV, 3);
-  }
+  Serial.print(",\"rpm\":");       Serial.print(spsToRpm(m, m.running ? m.currentSps : 0.0), 2);
+  Serial.print(",\"target_rpm\":");Serial.print(spsToRpm(m, m.targetSps), 2);
+  Serial.print(",\"microstep\":"); Serial.print((int)m.microstep);
+  Serial.print(",\"steps_per_rev\":"); Serial.print((int)stepsPerRev(m));
+  // 위치는 리밋이 없어도 싣는다. 끝점을 티칭하는 동안은 리밋을 풀어놓고
+  // 움직이는데, 그때가 바로 위치를 봐야 하는 순간이다(실측: 리밋 0 이면 위치가
+  // 안 와서 끝점을 찍을 수 없었다). 어느 축에 위치 UI 를 붙일지는 호스트가
+  // config(stroke_mm)로 정하므로 이 키의 유무로 고를 필요가 없다.
+  Serial.print(",\"pos_rev\":");   Serial.print(m.posSteps / stepsPerRev(m), 3);
+  Serial.print(",\"limit_rev\":"); Serial.print(m.limitSteps / stepsPerRev(m), 3);
   if (mi == 0) {
     // 서보는 보드에 1개다. M1 상태에만 실어 게이트 UI 가 한 카드에만 붙게 한다.
     Serial.print(",\"servo_deg\":"); Serial.print(servoDeg);
@@ -280,8 +286,8 @@ void handleCommand(int mi, const String& cmd) {
     // (반대 방향으로 DIR 을 바꾼 뒤 START 하면 빠져나올 수 있다)
     if (!canMove(m)) {
       Serial.print("ERR: 소프트 리밋 끝이다 (위치 ");
-      Serial.print(m.posSteps / STEPS_PER_REV, 2);
-      Serial.print("/"); Serial.print(m.limitSteps / STEPS_PER_REV, 2);
+      Serial.print(m.posSteps / stepsPerRev(m), 2);
+      Serial.print("/"); Serial.print(m.limitSteps / stepsPerRev(m), 2);
       Serial.println(" rev). 방향을 바꾸거나 ZERO 로 원점을 다시 잡을 것.");
       return;
     }
@@ -303,13 +309,13 @@ void handleCommand(int mi, const String& cmd) {
     }
 
   } else if (cmd.startsWith("RPM ")) {
-    float sps = rpmToSps(cmd.substring(4).toFloat());
+    float sps = rpmToSps(m, cmd.substring(4).toFloat());
     if (sps >= MIN_SPS && sps <= MAX_SPS) {
       m.targetSps = sps;
-      Serial.print("OK: TARGET_RPM="); Serial.println(spsToRpm(m.targetSps), 2);
+      Serial.print("OK: TARGET_RPM="); Serial.println(spsToRpm(m, m.targetSps), 2);
     } else {
-      Serial.print("ERR: RPM 범위는 "); Serial.print(spsToRpm(MIN_SPS), 2);
-      Serial.print("~"); Serial.println(spsToRpm(MAX_SPS), 2);
+      Serial.print("ERR: RPM 범위는 "); Serial.print(spsToRpm(m, MIN_SPS), 2);
+      Serial.print("~"); Serial.println(spsToRpm(m, MAX_SPS), 2);
     }
 
   } else if (cmd.startsWith("DIR ")) {
@@ -358,7 +364,7 @@ void handleCommand(int mi, const String& cmd) {
   } else if (cmd.startsWith("GOTO ")) {
     // 목표 위치(회전수)까지 가서 스스로 멈춘다. 방향은 현재 위치와 비교해 정한다.
     // 리밋이 있으면 그 안으로 잘라낸다 — 범위 밖을 찍어도 끝에서 멎을 뿐이다.
-    long target = (long)(cmd.substring(5).toFloat() * STEPS_PER_REV);
+    long target = (long)(cmd.substring(5).toFloat() * stepsPerRev(m));
     if (m.limitSteps > 0) {
       if (target < 0) target = 0;
       if (target > m.limitSteps) target = m.limitSteps;
@@ -376,7 +382,7 @@ void handleCommand(int mi, const String& cmd) {
     m.seekTarget = target;
     beginRun(m);
     m.seeking = true;    // beginRun 이 endRun 을 거칠 수 있으므로 그 뒤에 세운다
-    Serial.print("OK: GOTO "); Serial.println((float)target / STEPS_PER_REV, 3);
+    Serial.print("OK: GOTO "); Serial.println((float)target / stepsPerRev(m), 3);
 
   } else if (cmd == "ZERO") {
     // 리밋 스위치가 없으니 원점은 사람이 잡는다: 축을 한쪽 끝에 두고 이 명령.
@@ -389,7 +395,7 @@ void handleCommand(int mi, const String& cmd) {
     if (rev < 0) {
       Serial.println("ERR: LIMIT 은 0 이상 (0 = 해제)");
     } else {
-      m.limitSteps = rev * STEPS_PER_REV;
+      m.limitSteps = rev * stepsPerRev(m);
       Serial.print("OK: LIMIT="); Serial.println(rev, 2);
     }
 
