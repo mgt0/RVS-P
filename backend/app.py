@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import re
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -126,15 +127,34 @@ def _register_error_handlers(app: Flask) -> None:
 def _register_frontend(app: Flask) -> None:
     # 프런트엔드는 빌드 스텝이 없어 파일을 고치면 그게 곧 배포본이다. 브라우저가
     # 캐시를 들고 있으면 고친 코드가 반영되지 않고, 이미 고친 버그가 계속 재현돼
-    # 엉뚱한 곳을 파게 된다(실측으로 그랬다). 노트북 한 대에서 로컬로 주는 파일이라
-    # 캐시로 아낄 것도 없다 — 끈다. 그 대신 '강력 새로고침' 을 요구하지 않아도 된다.
+    # 엉뚱한 곳을 파게 된다(실측으로 그랬다).
+    #
+    # no-store 헤더만으로는 부족하다. '이미 저장된' 캐시는 헤더를 바꿔도 만료될
+    # 때까지 그대로 쓰이고(Flask 기본 12시간), 그동안 브라우저는 서버에 물어보지도
+    # 않는다. 그래서 URL 자체를 바꾼다 — index.html 의 정적 파일 참조에 그 파일의
+    # 수정 시각을 붙이면, 파일을 고치는 순간 다른 URL 이 되어 반드시 새로 받는다.
     def _no_cache(response):
         response.headers["Cache-Control"] = "no-store, must-revalidate"
         return response
 
+    static_ref = re.compile(r"(/static/[\w./-]+\.(?:js|css))")
+
+    def _stamped_index() -> str:
+        html = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+
+        def stamp(match: re.Match) -> str:
+            rel = match.group(1)
+            try:
+                mtime = int((FRONTEND_DIR / rel.lstrip("/")).stat().st_mtime)
+            except OSError:
+                return rel          # 없는 파일이면 건드리지 않는다(404 는 그대로 404)
+            return f"{rel}?v={mtime}"
+
+        return static_ref.sub(stamp, html)
+
     @app.get("/")
     def index():
-        return _no_cache(send_from_directory(FRONTEND_DIR, "index.html"))
+        return _no_cache(app.response_class(_stamped_index(), mimetype="text/html"))
 
     @app.get("/static/<path:filename>")
     def static_files(filename: str):
