@@ -186,6 +186,16 @@
                     :disabled="belt.busy || !belt.port">
               {{ belt.dir === 'ccw' ? '◀ 역방향' : '정방향 ▶' }}
             </button>
+            <!-- 토크를 풀면 축을 손으로 밀 수 있다. 원점을 잡을 자리로 옮길 때 쓴다.
+                 단 손으로 민 거리는 펌웨어가 모르므로(펄스를 안 보냈으니) 그 뒤에는
+                 반드시 원점을 다시 잡아야 한다. -->
+            <button class="btn" @click="toggleBeltTorque(belt)"
+                    :disabled="belt.busy || !belt.port"
+                    :title="belt.enabled === false
+                      ? '토크를 걸어 축을 고정합니다'
+                      : '토크를 풀어 손으로 축을 움직일 수 있게 합니다 (이후 원점 재설정 필요)'">
+              {{ belt.enabled === false ? '토크 걸기' : '토크 해제' }}
+            </button>
             <button class="btn" @click="releaseBelt(belt)"
                     :disabled="belt.busy || !belt.port"
                     title="펌웨어를 다시 업로드하려면 COM 포트를 놓아야 합니다">포트 해제</button>
