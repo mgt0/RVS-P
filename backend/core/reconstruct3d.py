@@ -63,6 +63,16 @@ TINY_SILHOUETTE = 0.005
 # 0.6 이 무릎이다. 더 매끄럽게 하려면 시그마가 아니라 뷰를 늘려야 한다.
 MESH_SMOOTH_SIGMA = 0.6
 
+# 어느 카메라에서도 보이지 않는 정점의 색. 대시보드 canvas 와 같은 톤의 중립 회색 —
+# 여기에 색을 지어내면 '찍히지 않은 면'과 '실제로 회색인 면'을 구분할 수 없다.
+NEUTRAL_GRAY = 0.72
+# 한 정점의 색에 섞을 카메라 수(내적 상위 K개). 1 이면 담당이 바뀌는 경계에서
+# 색이 뚝 끊겨 이음새가 보이고, 크게 잡으면 비스듬한 뷰까지 섞여 흐려진다.
+TEXTURE_BLEND_VIEWS = 3
+# 가림 판정 허용오차(복셀 칸 단위). 표면은 복셀 한 칸 두께로 요철이 있어
+# 1 이하로 잡으면 멀쩡한 표면이 얼룩덜룩 빠지고, 크게 잡으면 뒷면이 새어 들어온다.
+OCCLUSION_DEPTH_TOL = 1.5
+
 # 각 카메라 슬롯이 물체를 바라보는 방향. space carving 의 투영 기준이다.
 # 여기 값은 기본값일 뿐이고, 실제 리그는 config.yaml 의 cameras.*.view_dir 로 덮어쓴다
 # (기하는 물리적 사실이라 코드가 아니라 설정이 가져야 한다).
@@ -552,71 +562,174 @@ def _apply_texture_projection(
     directions: dict[str, tuple[float, float, float]],
     resolution: int
 ) -> np.ndarray:
-    """각 정점을 5개 뷰에 투영해 가장 정면으로 보이는 카메라의 실제 픽셀(색상)을 가져온다."""
-    num_verts = len(raw_verts)
-    colors = np.full((num_verts, 3), 0.72, dtype=np.float32)
-    best_dot = np.full(num_verts, -1.0, dtype=np.float32)
+    """각 정점에 실제 촬영 픽셀을 입힌다.
 
-    # 각 카메라별 정규화된 이미지(res x res) 준비
-    textures = {}
+    카메라 하나를 골라 덮어쓰는 대신, 그 정점을 '실제로 볼 수 있는' 카메라들만
+    추려 내적 가중으로 섞는다. 세 가지를 거른다.
+
+    1) 실루엣 밖 샘플은 버린다. 텍스처는 바운딩박스로 잘라낸 사각형이라 물체
+       주변 배경(초록 매트·방 안 풍경)이 그대로 들어 있다. 거르지 않으면 윤곽
+       근처 정점이 배경색을 집어와 부품 테두리에 색 띠가 생긴다.
+    2) 가려진 정점은 버린다(z-버퍼). 법선 내적만 보면 뒷면 정점도 그 카메라를
+       '정면으로 본다'고 판정되는데, 그 픽셀에 찍힌 것은 앞면이다.
+    3) 남은 카메라 중 상위 몇 개를 dot^2 가중으로 섞는다. 하나만 쓰면 담당이
+       바뀌는 경계에서 색이 뚝 끊겨 이음새가 보인다.
+
+    어느 카메라에서도 안 보이는 정점은 중립 회색으로 남긴다 — 검사 화면에서
+    색을 지어내는 것보다 '정보 없음'이 안전하다.
+    """
+    num_verts = len(raw_verts)
+    colors = np.full((num_verts, 3), NEUTRAL_GRAY, dtype=np.float32)
+    if num_verts == 0:
+        return colors
+
+    # 후보 카메라별 (가중치, 색) 을 쌓아 마지막에 한 번에 섞는다.
+    weight_sum = np.zeros(num_verts, dtype=np.float32)
+    color_sum = np.zeros((num_verts, 3), dtype=np.float32)
+    # 상위 K 개만 반영하기 위해 각 정점이 현재까지 받은 가중치를 정렬해 들고 있는다.
+    kept_weights = np.zeros((num_verts, TEXTURE_BLEND_VIEWS), dtype=np.float32)
+    kept_colors = np.zeros((num_verts, TEXTURE_BLEND_VIEWS, 3), dtype=np.float32)
+
+    # 정점 깊이 비교 허용오차. 복셀 한 칸보다 넉넉해야 표면이 얼룩덜룩 빠지지
+    # 않고, 너무 크면 뒷면이 새어 들어온다.
+    depth_tol = OCCLUSION_DEPTH_TOL / max(resolution, 1)
+
     for name, img in view_images.items():
         mask = silhouettes.get(name)
         if mask is None:
             continue
-        
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        
-        ys, xs = np.nonzero(mask)
-        if len(ys) == 0:
-            textures[name] = np.zeros((resolution, resolution, 3), np.uint8)
+        tex, tex_mask = _view_texture(img, mask, resolution)
+        if tex is None:
             continue
-            
-        y0, y1 = ys.min(), ys.max() + 1
-        x0, x1 = xs.min(), xs.max() + 1
-        crop = rgb[y0:y1, x0:x1]
-        
-        h, w = crop.shape[:2]
-        side = max(h, w)
-        square = np.zeros((side, side, 3), np.uint8)
-        oy, ox = (side - h) // 2, (side - w) // 2
-        square[oy:oy + h, ox:ox + w] = crop
-        
-        tex = cv2.resize(square, (resolution, resolution), interpolation=cv2.INTER_AREA)
-        textures[name] = tex
 
-    cx = raw_verts[:, 0]
-    cy = raw_verts[:, 1]
-    cz = raw_verts[:, 2]
-
-    for name, tex in textures.items():
-        d = np.array(directions.get(name, (0.0, 0.0, 1.0)), dtype=np.float32)
-        n_norm = np.linalg.norm(d)
-        if n_norm < 1e-9:
+        d = np.asarray(directions.get(name, (0.0, 0.0, 1.0)), dtype=np.float64)
+        norm = np.linalg.norm(d)
+        if norm < 1e-9:
             continue
-        d /= n_norm
-        
-        # 정점 법선과 카메라 방향의 내적 (클수록 카메라를 정면으로 바라봄)
-        dot = (normals @ d)
-        
+        d = d / norm
+
+        # 카메라를 향한 면일수록 크다. 등지고 있으면(<=0) 애초에 후보가 아니다.
+        dot = (normals @ d.astype(np.float32)).astype(np.float32)
+
+        # carve/_project_pixels 와 완전히 같은 정사영 식을 쓴다. 여기서 어긋나면
+        # 형상은 맞는데 색만 밀려 칠해진다.
         right, up = view_basis(d)
-        
-        pu = cx * right[0] + cy * right[1] + cz * right[2]
-        pv = cx * up[0] + cy * up[1] + cz * up[2]
-        
-        su = 0.5 * float(np.abs(right).sum())
-        sv = 0.5 * float(np.abs(up).sum())
-        
-        px = np.clip(((pu / su * 0.5 + 0.5) * (resolution - 1)).astype(np.int32), 0, resolution - 1)
-        py = np.clip(((0.5 - pv / sv * 0.5) * (resolution - 1)).astype(np.int32), 0, resolution - 1)
-        
-        # 현재 카메라가 더 정면으로 바라보는 정점들 업데이트
-        better = dot > best_dot
-        
-        sampled = tex[py[better], px[better]] / 255.0
-        colors[better] = sampled
-        best_dot[better] = dot[better]
+        fx, fy = _project_uv(raw_verts, right, up, resolution)
 
+        # 시선 방향 깊이(클수록 카메라에 가깝다) → 픽셀당 최댓값이 보이는 표면.
+        depth = (raw_verts @ d.astype(np.float32)).astype(np.float32)
+        visible = _visible_by_zbuffer(fx, fy, depth, resolution, depth_tol)
+
+        sample, inside = _sample_bilinear(tex, tex_mask, fx, fy)
+        ok = (dot > 0) & visible & inside
+        if not ok.any():
+            continue
+
+        # dot^2: 정면 카메라에 힘을 실어 흐릿해지지 않게 하면서 경계에서만 섞이게 한다.
+        w = np.where(ok, dot * dot, 0.0).astype(np.float32)
+        kept_weights, kept_colors = _keep_top_k(kept_weights, kept_colors, w, sample)
+
+    weight_sum = kept_weights.sum(axis=1)
+    color_sum = (kept_colors * kept_weights[:, :, None]).sum(axis=1)
+    has_color = weight_sum > 1e-6
+    colors[has_color] = color_sum[has_color] / weight_sum[has_color, None]
     return colors
+
+
+def _view_texture(
+    image: np.ndarray, mask: np.ndarray, resolution: int
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """이미지와 실루엣을 같은 바운딩박스로 잘라 res×res 정사각 텍스처로 만든다.
+
+    normalize_silhouette 과 같은 규칙(바운딩박스 → 정사각 패딩 → 리사이즈)이어야
+    복셀 투영 좌표와 맞는다. 마스크도 똑같이 변환해 함께 돌려준다 — 배경 픽셀을
+    걸러내려면 '이 텍셀이 물체인지'를 알아야 하기 때문이다.
+    """
+    ys, xs = np.nonzero(mask)
+    if len(ys) == 0:
+        return None, None
+
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)[y0:y1, x0:x1]
+    sub = (mask[y0:y1, x0:x1] > 0).astype(np.uint8) * 255
+
+    h, w = rgb.shape[:2]
+    side = max(h, w)
+    oy, ox = (side - h) // 2, (side - w) // 2
+    square = np.zeros((side, side, 3), np.uint8)
+    square_mask = np.zeros((side, side), np.uint8)
+    square[oy:oy + h, ox:ox + w] = rgb
+    square_mask[oy:oy + h, ox:ox + w] = sub
+
+    tex = cv2.resize(square, (resolution, resolution), interpolation=cv2.INTER_AREA)
+    # 마스크는 INTER_NEAREST 로 줄인다. 보간하면 경계에 중간값이 생겨 배경이
+    # 절반쯤 섞인 텍셀이 '물체'로 통과한다.
+    tex_mask = cv2.resize(square_mask, (resolution, resolution), interpolation=cv2.INTER_NEAREST)
+    return tex.astype(np.float32) / 255.0, tex_mask > 127
+
+
+def _project_uv(verts: np.ndarray, right, up, size: int) -> tuple[np.ndarray, np.ndarray]:
+    """정점을 이미지 평면에 정사영한 '실수' 픽셀 좌표. _project_pixels 의 연속 버전."""
+    pu = verts @ np.asarray(right, dtype=np.float32)
+    pv = verts @ np.asarray(up, dtype=np.float32)
+    su = 0.5 * float(np.abs(right).sum())
+    sv = 0.5 * float(np.abs(up).sum())
+    fx = (pu / su * 0.5 + 0.5) * (size - 1)
+    fy = (0.5 - pv / sv * 0.5) * (size - 1)
+    return fx.astype(np.float32), fy.astype(np.float32)
+
+
+def _visible_by_zbuffer(
+    fx: np.ndarray, fy: np.ndarray, depth: np.ndarray, size: int, tol: float
+) -> np.ndarray:
+    """같은 픽셀에 겹친 정점 중 카메라에 가장 가까운 것만 '보인다'고 판정한다."""
+    px = np.clip(np.rint(fx).astype(np.int32), 0, size - 1)
+    py = np.clip(np.rint(fy).astype(np.int32), 0, size - 1)
+    flat = py * size + px
+
+    # np.maximum.at 은 중복 인덱스를 모두 반영한다(단순 대입은 마지막 것만 남는다).
+    nearest = np.full(size * size, -np.inf, dtype=np.float32)
+    np.maximum.at(nearest, flat, depth)
+    return depth >= nearest[flat] - tol
+
+
+def _sample_bilinear(
+    tex: np.ndarray, tex_mask: np.ndarray, fx: np.ndarray, fy: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """이중선형 보간으로 색을 뽑는다. 네 이웃이 모두 물체일 때만 유효로 친다.
+
+    하나라도 배경이면 버리는 이유: 경계 텍셀을 섞으면 배경색이 옅게 배어들어
+    결국 A(배경 번짐)를 다시 만든다.
+    """
+    size = tex.shape[0]
+    x0 = np.clip(np.floor(fx).astype(np.int32), 0, size - 1)
+    y0 = np.clip(np.floor(fy).astype(np.int32), 0, size - 1)
+    x1 = np.clip(x0 + 1, 0, size - 1)
+    y1 = np.clip(y0 + 1, 0, size - 1)
+    wx = np.clip(fx - x0, 0.0, 1.0).astype(np.float32)[:, None]
+    wy = np.clip(fy - y0, 0.0, 1.0).astype(np.float32)[:, None]
+
+    top = tex[y0, x0] * (1 - wx) + tex[y0, x1] * wx
+    bottom = tex[y1, x0] * (1 - wx) + tex[y1, x1] * wx
+    sample = top * (1 - wy) + bottom * wy
+
+    inside = tex_mask[y0, x0] & tex_mask[y0, x1] & tex_mask[y1, x0] & tex_mask[y1, x1]
+    return sample.astype(np.float32), inside
+
+
+def _keep_top_k(
+    weights: np.ndarray, colors: np.ndarray, new_w: np.ndarray, new_c: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """정점별 상위 K개 후보만 유지한다(가장 약한 것을 새 후보와 교체)."""
+    weakest = weights.argmin(axis=1)
+    rows = np.arange(len(weights))
+    replace = new_w > weights[rows, weakest]
+    idx = weakest[replace]
+    target = rows[replace]
+    weights[target, idx] = new_w[replace]
+    colors[target, idx] = new_c[replace]
+    return weights, colors
 
 
 def _apply_defect_overlay(

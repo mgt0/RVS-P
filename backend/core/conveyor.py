@@ -23,6 +23,7 @@ import json
 import logging
 import threading
 import time
+from contextlib import contextmanager
 
 import serial
 
@@ -35,7 +36,9 @@ logger = logging.getLogger(__name__)
 _READY_PREFIX = "READY"
 # 보드가 리셋된 직후라면 READY 까지 1초 남짓(ESP32 실측). BlackPill 은 보통
 # 배너가 안 오고 그게 정상이다 — 타임아웃 후 그대로 진행한다.
-_BOOT_TIMEOUT_SEC = 5.0
+# PONG 이 오면 즉시 끝나므로(실측 0.05초) 이 값은 '보드가 대답을 안 할 때' 만
+# 쓰인다. 그 상황에서 5초를 통째로 붙잡으면 세 축의 요청이 다 밀리므로 짧게 잡는다.
+_BOOT_TIMEOUT_SEC = 2.0
 # 모터축 RPM 상한. 여기서는 명백한 오입력만 막고, 실제 범위 판정은 펌웨어에 맡긴다
 # (마이크로스텝 값이 DIP 스위치와 함께 펌웨어에 박혀 있다).
 # 펌웨어 MAX_SPS 는 1,200,000(타이머 PWM 이라 CPU 부담 없음). 호스트 상한은
@@ -47,6 +50,14 @@ _RPM_HARD_MAX = 10000.0
 # 포트당 핸들/락을 하나만 두고, 끊기면 dict 에서 지워 다음 명령이 다시 열게 한다.
 _ports: dict[str, serial.Serial] = {}
 _port_locks: dict[str, threading.RLock] = {}
+
+# 락을 기다리는 한도. 세 축이 한 포트(=한 락)를 공유하므로, 한 명령이 오래 걸리면
+# 나머지 축의 요청이 전부 그 뒤에 줄을 선다. 무한정 기다리면 화면 전체가 '대기'로
+# 굳으므로(실측: 포트를 다른 프로세스가 잡았을 때 그랬다) 여기서 끊고 이유를 준다.
+_CMD_LOCK_TIMEOUT_SEC = 3.0
+# 상태 폴링은 더 짧다. 5초마다 도는 폴링이 명령을 기다리며 밀리면 폴링끼리 쌓여
+# 서버 스레드를 다 먹는다. 못 잡으면 캐시를 주는 편이 낫다 — 다음 폴링에 갱신된다.
+_STATUS_LOCK_TIMEOUT_SEC = 0.5
 
 
 class ConveyorController:
@@ -148,7 +159,11 @@ class ConveyorController:
     def disconnect(self) -> None:
         # 포트는 보드 단위다 — 같은 보드에 물린 다른 모터들도 함께 끊긴다
         # (펌웨어 업로드용이므로 그게 맞다). 각자 다음 명령에서 자동 재연결한다.
-        with self._lock:
+        #
+        # 락을 못 잡아도 포트는 닫는다. 이 함수는 '포트를 놓아달라'는 요청이고
+        # (펌웨어 업로드 직전에 쓴다), 뭔가에 붙잡혀 있을 때야말로 놓아야 한다.
+        got = self._lock.acquire(timeout=_CMD_LOCK_TIMEOUT_SEC)
+        try:
             ser = _ports.pop(self._cfg.port, None)
             if ser is not None:
                 try:
@@ -156,11 +171,32 @@ class ConveyorController:
                 except (serial.SerialException, OSError):
                     logger.exception("컨베이어 포트 닫기 실패")
             self._state.update(running=False, rpm=0.0, sps=0.0)
+        finally:
+            if got:
+                self._lock.release()
 
     # ------------------------------------------------------------------ 통신
+    @contextmanager
+    def _hold(self, timeout: float, what: str):
+        """락을 기한 안에만 기다린다. 못 잡으면 즉시 예외 — 무한 대기가 금지다.
+
+        with self._lock 로 두면 앞선 명령이 끝날 때까지 무한정 기다린다. 포트가
+        다른 프로세스에 잡혔거나 보드가 응답을 멈추면 그 한 건이 몇 초를 붙잡고,
+        같은 보드를 쓰는 세 축의 요청이 전부 그 뒤에 쌓여 화면이 통째로 굳는다.
+        """
+        if not self._lock.acquire(timeout=timeout):
+            raise ConveyorError(
+                f"{self._cfg.port} 가 다른 작업에 붙잡혀 있습니다({what} 대기 {timeout:.1f}초 초과). "
+                "펌웨어 업로드나 다른 프로그램이 포트를 쓰고 있지 않은지 확인하세요."
+            )
+        try:
+            yield
+        finally:
+            self._lock.release()
+
     def _command(self, command: str) -> str:
         """한 줄 보내고 한 줄 받는다. "ERR: " 응답은 예외로 올린다."""
-        with self._lock:
+        with self._hold(_CMD_LOCK_TIMEOUT_SEC, command):
             if self._simulate:
                 return self._simulated(command)
 
@@ -374,11 +410,20 @@ class ConveyorController:
         여기서 _ensure_open() 을 부르면 /release 로 놓아준 포트를 상태 폴링이
         다시 붙잡는다. 리셋형 보드(CH340 계열)라면 돌던 모터까지 멈추고,
         BlackPill 이라도 DFU 업로드 중이면 방해가 된다. 열지 않는 게 맞다.
+
+        폴링은 절대 기다리지 않는다. 명령이 진행 중이면 캐시를 주고 물러난다 —
+        5초마다 도는 폴링이 명령 뒤에 줄을 서면 폴링끼리 쌓여 서버가 그것만
+        처리하게 되고, 정작 버튼 요청이 뒤로 밀린다(화면 전체가 '대기'로 굳는다).
         """
-        with self._lock:
-            if not self.connected:
-                return self.state
+        if not self.connected:
+            return self.state
+        if not self._lock.acquire(timeout=_STATUS_LOCK_TIMEOUT_SEC):
+            # 지금 명령이 오가는 중이다. 다음 폴링이 갱신하므로 캐시로 충분하다.
+            return {**self.state, "stale": True}
+        try:
             return self._refresh()
+        finally:
+            self._lock.release()
 
     # ------------------------------------------------------------- 시뮬레이션
     def _simulated(self, command: str) -> str:
