@@ -11,13 +11,36 @@ const { createApp, computed, onMounted, onUnmounted, reactive, ref } = Vue;
    서버 에러 바디({ error: { message } })를 Error 로 정규화해
    호출부가 성공 경로만 신경 쓰게 한다.
    ------------------------------------------------------------- */
+/* 요청 하나가 이 시간을 넘기면 실패로 친다.
+   브라우저 기본 타임아웃은 수 분이라, 그 사이 요청을 기다리는 화면은 통째로
+   굳는다(버튼이 눌린 채 안 돌아온다). 서버가 죽었든, 연결이 모자라 큐에
+   걸렸든, 원인이 무엇이든 여기서 끊고 사용자에게 이유를 보여주는 편이 낫다.
+   정상 명령은 실측 16~62ms 라 8초면 충분히 넉넉하다. */
+const REQUEST_TIMEOUT_MS = 8000;
+
 const api = {
   async request(path, options = {}) {
-    const res = await fetch(path, {
-      headers: { 'Content-Type': 'application/json' },
-      ...options,
-      body: options.body ? JSON.stringify(options.body) : undefined,
-    });
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), REQUEST_TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch(path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+        signal: abort.signal,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+      });
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        throw new Error(
+          `서버가 ${REQUEST_TIMEOUT_MS / 1000}초 안에 응답하지 않았습니다 (${path}). ` +
+          '서버가 떠 있는지, 두 개가 동시에 떠 있지 않은지 확인하세요.'
+        );
+      }
+      throw new Error(`서버에 연결할 수 없습니다 (${path}): ${err.message}`);
+    } finally {
+      clearTimeout(timer);
+    }
 
     let data = null;
     try {
@@ -118,6 +141,13 @@ createApp({
        각 항목 = 서버 상태 + rpmInput(사용자가 입력 중인 목표 RPM).
        rpmInput 기본 2 는 확실히 도는 저속 — 올리면서 탈조 한계를 찾는다. */
     const conveyors = ref([]);
+
+    /* 명령이 오가는 동안 그 축의 버튼을 잠근다. 키는 벨트 '이름' 이다.
+       벨트 객체에 담아뒀더니 폴링이 목록을 갈아끼울 때 진행 중이던 명령이 옛
+       객체를 들고 있게 되어 잠금이 영영 안 풀렸다(버튼이 눌린 채 굳었다).
+       이름은 객체가 어떻게 바뀌든 그대로라 그런 일이 없다. */
+    const beltBusy = reactive({});
+    const isBeltBusy = (belt) => !!beltBusy[belt.name];
 
     const form = reactive({ episodeId: '', objectId: '', label: 'good', defectType: null });
     // 저장된 에피소드 목록. 행을 그대로 v-model 로 편집하고 SAVE 시 서버로 보낸다.
@@ -418,13 +448,22 @@ createApp({
         // 이미 있는 벨트는 '제자리'로 갱신한다. 새 객체로 갈아끼우면 진행 중인
         // 명령이 들고 있던 참조가 화면에서 떨어져 나가, 완료 시점에 푸는
         // belt.busy = false 가 버려진 객체에만 적용된다 — 버튼이 잠긴 채 굳는다.
-        if (belt) return Object.assign(belt, b);
+        if (belt) {
+          Object.assign(belt, b);
+          // 멈춰 있는 동안 슬라이더를 실제 위치에 맞춘다. 안 맞추면 핸들이 옛
+          // 목표에 남아, 실제 위치로 끌어다 놓아도 '이미 그 위치' 라 아무 일이
+          // 없다(움직이라고 했는데 안 움직이는 것처럼 보인다).
+          // 조작 중이거나 이동 중일 때는 건드리지 않는다 — 핸들이 손에서 튄다.
+          if (!beltBusy[b.name] && !belt.dragging && !belt.running && belt.mm_per_rev) {
+            belt.moveInput = Math.round((belt.pos_rev || 0) * belt.mm_per_rev);
+          }
+          return belt;
+        }
         return {
           // rpmInput/moveInput 은 사용자가 조작 중인 값이라 서버 응답에 없다
           // (폴링이 못 덮어쓴다). 처음 만들 때만 현재 값으로 맞춰둔다.
           rpmInput: b.target_rpm ? Math.round(b.target_rpm * 100) / 100 : 2,
           moveInput: Math.round((b.pos_rev || 0) * (b.mm_per_rev || 0)),
-          busy: false,
           ...b,
         };
       });
@@ -449,14 +488,15 @@ createApp({
        버튼까지 전부 잠겨(정지 버튼 포함) '전부 멈춘 것처럼' 보인다 — 축이 3개가
        되면서 실제로 그렇게 보였다. 축끼리는 서로 독립이어야 한다. */
     async function beltCall(belt, fn, message) {
-      belt.busy = true;
+      const key = belt.name;
+      beltBusy[key] = true;
       try {
         applyBelt(await fn());
         if (message) notify(`${belt.label || belt.name} — ${message}`);
       } catch (err) {
         notify(`${belt.label || belt.name}: ${err.message}`, 'error');
       } finally {
-        belt.busy = false;
+        beltBusy[key] = false;
       }
     }
 
@@ -998,7 +1038,7 @@ createApp({
       ports, status, meta, form, busy, toasts,
       recording, connectedCount, totalCount, allConnected, canStart, cameraViews, objectCounts,
       refreshPorts, testConnections, identify, toggleTeleop, goHome,
-      conveyors, beltStatusLabel, beltAtLimit, startBelt, stopBelt, setBeltSpeed,
+      conveyors, isBeltBusy, beltStatusLabel, beltAtLimit, startBelt, stopBelt, setBeltSpeed,
       toggleBeltDir, releaseBelt, setGate, setBeltZero, setBeltEnd, moveBeltTo,
       toggleBeltTorque,
       GATE_OPEN_DEG, GATE_CLOSE_DEG,

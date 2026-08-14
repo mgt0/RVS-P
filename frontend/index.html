@@ -166,38 +166,38 @@
                ? 'PORT ' + belt.port + (belt.motor ? ' · M' + belt.motor : '')
                : '포트 미설정 — config.yaml 의 conveyors.' + belt.name + '.port 를 채우세요' }}
           </div>
-          <!-- 잠금은 belt.busy 다. 전역 플래그를 쓰면 한 축을 조작하는 동안
+          <!-- 잠금은 isBeltBusy(belt) 다. 전역 플래그를 쓰면 한 축을 조작하는 동안
                다른 축의 정지 버튼까지 잠겨 전부 멈춘 것처럼 보인다. -->
           <div class="btn-row" style="margin-top:16px">
             <!-- 리밋 끝에서는 펌웨어가 START 를 거부한다. 눌러보고 실패하는 대신
                  미리 잠그고 왜 그런지 툴팁으로 알려준다. -->
             <button class="btn btn--primary" @click="startBelt(belt)"
-                    :disabled="belt.busy || !belt.port || beltAtLimit(belt)"
+                    :disabled="isBeltBusy(belt) || !belt.port || beltAtLimit(belt)"
                     :title="beltAtLimit(belt)
                       ? '이 방향 끝입니다 — 방향을 바꾸거나 원점을 다시 잡으세요'
                       : null">시작</button>
             <button class="btn" @click="stopBelt(belt)"
-                    :disabled="belt.busy || !belt.port">정지</button>
+                    :disabled="isBeltBusy(belt) || !belt.port">정지</button>
             <input class="input" type="number" min="0.5" max="112" step="0.5" style="width:96px"
                    v-model.number="belt.rpmInput" @change="setBeltSpeed(belt)"
-                   :disabled="belt.busy || !belt.port"
+                   :disabled="isBeltBusy(belt) || !belt.port"
                    :aria-label="(belt.label || belt.name) + ' 목표 속도 (모터축 RPM)'">
             <button class="btn" @click="toggleBeltDir(belt)"
-                    :disabled="belt.busy || !belt.port">
+                    :disabled="isBeltBusy(belt) || !belt.port">
               {{ belt.dir === 'ccw' ? '◀ 역방향' : '정방향 ▶' }}
             </button>
             <!-- 토크를 풀면 축을 손으로 밀 수 있다. 원점을 잡을 자리로 옮길 때 쓴다.
                  단 손으로 민 거리는 펌웨어가 모르므로(펄스를 안 보냈으니) 그 뒤에는
                  반드시 원점을 다시 잡아야 한다. -->
             <button class="btn" @click="toggleBeltTorque(belt)"
-                    :disabled="belt.busy || !belt.port"
+                    :disabled="isBeltBusy(belt) || !belt.port"
                     :title="belt.enabled === false
                       ? '토크를 걸어 축을 고정합니다'
                       : '토크를 풀어 손으로 축을 움직일 수 있게 합니다 (이후 원점 재설정 필요)'">
               {{ belt.enabled === false ? '토크 걸기' : '토크 해제' }}
             </button>
             <button class="btn" @click="releaseBelt(belt)"
-                    :disabled="belt.busy || !belt.port"
+                    :disabled="isBeltBusy(belt) || !belt.port"
                     title="펌웨어를 다시 업로드하려면 COM 포트를 놓아야 합니다">포트 해제</button>
           </div>
 
@@ -207,12 +207,12 @@
                style="margin-top:12px; align-items:center">
             <span class="mono mono--xs">이송 위치</span>
             <button class="btn" @click="setBeltZero(belt)"
-                    :disabled="belt.busy || !belt.port"
+                    :disabled="isBeltBusy(belt) || !belt.port"
                     title="리밋 스위치가 없습니다. 축을 한쪽 끝으로 옮긴 뒤 눌러 원점을 잡으세요">
               원점 설정
             </button>
             <button class="btn" @click="setBeltEnd(belt)"
-                    :disabled="belt.busy || !belt.port"
+                    :disabled="isBeltBusy(belt) || !belt.port"
                     title="원점을 잡고 반대쪽 끝까지 옮긴 뒤 누르세요. 여기가 가동 범위의 끝이 되고 저장됩니다">
               끝점 설정
             </button>
@@ -236,7 +236,7 @@
                    :max="Math.round(belt.stroke_mm)"
                    v-model.number="belt.moveInput"
                    @change="moveBeltTo(belt)"
-                   :disabled="belt.busy || !belt.port"
+                   :disabled="isBeltBusy(belt) || !belt.port"
                    :aria-label="(belt.label || belt.name) + ' 목표 위치 (mm)'">
             <span class="mono mono--xs">{{ Math.round(belt.moveInput || 0) }} mm</span>
           </div>
@@ -249,11 +249,11 @@
             <span class="mono mono--xs">분류 게이트</span>
             <button class="toggle" style="flex:0 0 auto; min-width:88px"
                     :class="{ 'toggle--on': belt.servo_deg === GATE_OPEN_DEG }"
-                    :disabled="belt.busy || !belt.port"
+                    :disabled="isBeltBusy(belt) || !belt.port"
                     @click="setGate(belt, GATE_OPEN_DEG)">열림</button>
             <button class="toggle" style="flex:0 0 auto; min-width:88px"
                     :class="{ 'toggle--on': belt.servo_deg === GATE_CLOSE_DEG }"
-                    :disabled="belt.busy || !belt.port"
+                    :disabled="isBeltBusy(belt) || !belt.port"
                     @click="setGate(belt, GATE_CLOSE_DEG)">닫힘</button>
             <span class="mono mono--xs" v-if="belt.servo_deg !== undefined">
               {{ belt.servo_deg }}°

@@ -476,7 +476,7 @@ def silhouette_consistency(
     return float(np.mean(scores))
 
 
-def _volume_to_mesh(volume: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _volume_to_mesh(volume: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """복셀 볼륨 → 표면 메시(marching cubes).
 
     scikit-image 가 있으면 그걸 쓰고, 없으면 복셀 표면 큐브를 직접 생성하는
@@ -486,17 +486,19 @@ def _volume_to_mesh(volume: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndar
         from skimage import measure
 
         verts, faces, normals, _ = measure.marching_cubes(_clean_volume(volume), level=0.5)
+        # 투영을 위해 정규화 전 좌표(원점이 중심인 정규 좌표계) 저장
+        raw_verts = verts / (volume.shape[0] - 1) - 0.5
         # 중심 정렬 + 단위 정규화
         verts = verts - verts.mean(axis=0)
         scale = np.abs(verts).max() or 1.0
         verts = verts / scale
-        return verts.astype(np.float32), faces.astype(np.int32), normals.astype(np.float32)
+        return verts.astype(np.float32), faces.astype(np.int32), normals.astype(np.float32), raw_verts.astype(np.float32)
     except ImportError:
         logger.info("scikit-image 없음 → 복셀 큐브 폴백 사용")
         return _voxel_cube_mesh(volume)
 
 
-def _voxel_cube_mesh(volume: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _voxel_cube_mesh(volume: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """표면 복셀만 작은 큐브로 렌더(폴백).
 
     marching cubes 보다 거칠지만 형상 확인엔 충분하고 의존성이 없다.
@@ -514,7 +516,7 @@ def _voxel_cube_mesh(volume: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.nda
     coords = np.argwhere(surface)
 
     if len(coords) == 0:
-        return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int32), np.zeros((0, 3), np.float32)
+        return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int32), np.zeros((0, 3), np.float32), np.zeros((0, 3), np.float32)
 
     # 정규화
     center = coords.mean(axis=0)
@@ -526,31 +528,112 @@ def _voxel_cube_mesh(volume: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.nda
                        [0, 4, 5], [0, 5, 1], [1, 5, 6], [1, 6, 2],
                        [2, 6, 7], [2, 7, 3], [3, 7, 4], [3, 4, 0]], dtype=np.int32)
 
-    all_v, all_f = [], []
+    all_v, all_f, all_raw = [], [], []
     vsize = 1.0 / res
     for i, c in enumerate(coords):
+        raw = (c + cube_v * 0.9) / (res - 1) - 0.5
         v = (c + cube_v * 0.9 - center) / scale * vsize * res * 0.5
         all_v.append(v)
+        all_raw.append(raw)
         all_f.append(cube_f + i * 8)
 
     verts = np.vstack(all_v).astype(np.float32)
     faces = np.vstack(all_f).astype(np.int32)
+    raw_verts = np.vstack(all_raw).astype(np.float32)
     normals = verts / (np.linalg.norm(verts, axis=1, keepdims=True) + 1e-9)
-    return verts, faces, normals
+    return verts, faces, normals, raw_verts
+
+
+def _apply_texture_projection(
+    raw_verts: np.ndarray,
+    normals: np.ndarray,
+    view_images: dict[str, np.ndarray],
+    silhouettes: dict[str, np.ndarray],
+    directions: dict[str, tuple[float, float, float]],
+    resolution: int
+) -> np.ndarray:
+    """각 정점을 5개 뷰에 투영해 가장 정면으로 보이는 카메라의 실제 픽셀(색상)을 가져온다."""
+    num_verts = len(raw_verts)
+    colors = np.full((num_verts, 3), 0.72, dtype=np.float32)
+    best_dot = np.full(num_verts, -1.0, dtype=np.float32)
+
+    # 각 카메라별 정규화된 이미지(res x res) 준비
+    textures = {}
+    for name, img in view_images.items():
+        mask = silhouettes.get(name)
+        if mask is None:
+            continue
+        
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        ys, xs = np.nonzero(mask)
+        if len(ys) == 0:
+            textures[name] = np.zeros((resolution, resolution, 3), np.uint8)
+            continue
+            
+        y0, y1 = ys.min(), ys.max() + 1
+        x0, x1 = xs.min(), xs.max() + 1
+        crop = rgb[y0:y1, x0:x1]
+        
+        h, w = crop.shape[:2]
+        side = max(h, w)
+        square = np.zeros((side, side, 3), np.uint8)
+        oy, ox = (side - h) // 2, (side - w) // 2
+        square[oy:oy + h, ox:ox + w] = crop
+        
+        tex = cv2.resize(square, (resolution, resolution), interpolation=cv2.INTER_AREA)
+        textures[name] = tex
+
+    cx = raw_verts[:, 0]
+    cy = raw_verts[:, 1]
+    cz = raw_verts[:, 2]
+
+    for name, tex in textures.items():
+        d = np.array(directions.get(name, (0.0, 0.0, 1.0)), dtype=np.float32)
+        n_norm = np.linalg.norm(d)
+        if n_norm < 1e-9:
+            continue
+        d /= n_norm
+        
+        # 정점 법선과 카메라 방향의 내적 (클수록 카메라를 정면으로 바라봄)
+        dot = (normals @ d)
+        
+        right, up = view_basis(d)
+        
+        pu = cx * right[0] + cy * right[1] + cz * right[2]
+        pv = cx * up[0] + cy * up[1] + cz * up[2]
+        
+        su = 0.5 * float(np.abs(right).sum())
+        sv = 0.5 * float(np.abs(up).sum())
+        
+        px = np.clip(((pu / su * 0.5 + 0.5) * (resolution - 1)).astype(np.int32), 0, resolution - 1)
+        py = np.clip(((0.5 - pv / sv * 0.5) * (resolution - 1)).astype(np.int32), 0, resolution - 1)
+        
+        # 현재 카메라가 더 정면으로 바라보는 정점들 업데이트
+        better = dot > best_dot
+        
+        sampled = tex[py[better], px[better]] / 255.0
+        colors[better] = sampled
+        best_dot[better] = dot[better]
+
+    return colors
 
 
 def _apply_defect_overlay(
-    verts: np.ndarray, defect_regions: list[dict] | None
+    verts: np.ndarray, defect_regions: list[dict] | None, base_colors: np.ndarray | None = None
 ) -> np.ndarray:
     """정점 색상 생성. 불량 영역 근처 정점을 선셋 오렌지로 물들인다.
 
     defect_regions: [{"center": [x,y,z], "radius": r, "severity": 0~1}, ...]
       CNN/검출 결과에서 넘어오는 불량 위치. 정규화 좌표 기준.
     """
-    neutral = np.array([0.72, 0.73, 0.75])   # 중립 그레이
+    if base_colors is None:
+        colors = np.tile(np.array([0.72, 0.73, 0.75]), (len(verts), 1)).astype(np.float32)
+    else:
+        colors = base_colors.copy()
+
     sunset = np.array([1.0, 0.478, 0.09])    # #ff7a17
 
-    colors = np.tile(neutral, (len(verts), 1)).astype(np.float32)
     if not defect_regions:
         return colors
 
@@ -625,12 +708,17 @@ def reconstruct_from_views(
             detail={"silhouette_coverage": {k: round(v, 4) for k, v in coverage.items()}},
         )
 
-    verts, faces, _ = _volume_to_mesh(volume)
+    verts, faces, normals, raw_verts = _volume_to_mesh(volume)
+
+    # 실제 이미지 픽셀을 3D 표면에 텍스처로 매핑한다
+    base_colors = _apply_texture_projection(
+        raw_verts, normals, view_images, silhouettes, directions or VIEW_DIRECTIONS, resolution
+    )
 
     # 양품이면 하이라이트를 끈다.
     label = (classification or {}).get("label", "unknown")
     regions = defect_regions if label != "good" else None
-    colors = _apply_defect_overlay(verts, regions)
+    colors = _apply_defect_overlay(verts, regions, base_colors=base_colors)
 
     stats = {
         "num_views": len(view_images),
