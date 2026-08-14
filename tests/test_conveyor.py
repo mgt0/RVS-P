@@ -83,7 +83,8 @@ class FakeSerial:
         if len(cmd) >= 3 and cmd[0] == "M" and cmd[1] in "123" and cmd[2] == " ":
             cmd = cmd[3:]
         if cmd == "START":
-            self.state.update(running=True, rpm=self.state["target_rpm"])
+            # 펌웨어 beginRun() 은 꺼져 있던 드라이버를 다시 켠다(DISABLE 후 START).
+            self.state.update(running=True, enabled=True, rpm=self.state["target_rpm"])
             return "OK: STARTED"
         if cmd == "STOP":
             self.state.update(running=False, rpm=0.0)
@@ -108,6 +109,10 @@ class FakeSerial:
         if cmd.startswith("LIMIT "):
             self.state["limit_rev"] = float(cmd[6:])
             return f"OK: LIMIT={self.state['limit_rev']:.2f}"
+        if cmd.startswith("GOTO "):
+            self.state["pos_rev"] = float(cmd[5:])
+            self.state.update(running=False, rpm=0.0)
+            return f"OK: GOTO {self.state['pos_rev']:.3f}"
         if cmd.startswith("SERVO "):
             deg = int(cmd[6:])
             if not 0 <= deg <= 180:
@@ -268,6 +273,77 @@ def test_리밋_설정값은_연결_전에도_상태에_실린다():
     assert lm.state["limit_rev"] == 10.0
     belt = ConveyorController(ConveyorConfig(port="COM11", motor=1))
     assert belt.state["limit_rev"] == 0.0
+
+
+# ------------------------------------------------------- 끝점 티칭 · 위치 이동
+class FakeCalibration:
+    """calibration.Calibration 과 같은 모양의 인메모리 스텁."""
+
+    def __init__(self) -> None:
+        self.data: dict[str, dict] = {}
+
+    def get(self, axis, key, default=None):
+        return self.data.get(axis, {}).get(key, default)
+
+    def set(self, axis, key, value):
+        self.data.setdefault(axis, {})[key] = value
+
+
+def _lm(fake_serial, cal=None, stroke=0.0):
+    return ConveyorController(
+        ConveyorConfig(port="COM11", motor=3, stroke_mm=stroke, mm_per_rev=40.0,
+                       timeout_sec=0.2),
+        calibration=cal, name="lm",
+    )
+
+
+def test_끝점_설정은_현재_위치를_저장하고_리밋으로_보낸다(fake_serial):
+    """자로 재서 config 에 옮겨 적는 대신 축을 직접 움직여 정한다."""
+    cal = FakeCalibration()
+    lm = _lm(fake_serial, cal)
+    lm.set_zero()
+    lm.move_to_mm(0)                      # 펌웨어 상태를 0 으로
+    fake_serial.instances[-1].state["pos_rev"] = 16.0   # 16 회전 = 640mm 지점까지 이동했다
+
+    state = lm.set_end()
+
+    assert cal.get("lm", "stroke_mm") == 640.0
+    assert state["stroke_mm"] == 640.0
+    assert "M3 LIMIT 16.000" in fake_serial.instances[-1].commands
+
+
+def test_저장된_끝점이_config_기본값을_이긴다(fake_serial):
+    cal = FakeCalibration()
+    cal.set("lm", "stroke_mm", 500.0)
+    lm = _lm(fake_serial, cal, stroke=640.0)
+    assert lm.stroke_mm == 500.0
+    assert lm.limit_rev == 12.5           # 500 / 40
+
+
+def test_끝점을_안_찍었으면_config_값을_쓴다(fake_serial):
+    lm = _lm(fake_serial, FakeCalibration(), stroke=640.0)
+    assert lm.stroke_mm == 640.0
+
+
+def test_원점에서_바로_끝점을_찍으면_거부한다(fake_serial):
+    """움직이지 않고 누르면 가동 범위가 0 이 되어 축이 아예 못 움직인다."""
+    lm = _lm(fake_serial, FakeCalibration())
+    lm.set_zero()
+    with pytest.raises(ValidationError):
+        lm.set_end()
+
+
+def test_위치_이동은_mm를_회전수로_바꿔_보낸다(fake_serial):
+    lm = _lm(fake_serial, FakeCalibration(), stroke=640.0)
+    lm.move_to_mm(320)
+    assert "M3 GOTO 8.0000" in fake_serial.instances[-1].commands
+
+
+@pytest.mark.parametrize("bad", [-1, 700, "가운데"])
+def test_가동_범위_밖_위치는_ValidationError(fake_serial, bad):
+    lm = _lm(fake_serial, FakeCalibration(), stroke=640.0)
+    with pytest.raises(ValidationError):
+        lm.move_to_mm(bad)
 
 
 # --------------------------------------------------------------------- 오류
