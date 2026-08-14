@@ -113,10 +113,21 @@ class ConveyorConfig:
     # 보드 하나(BlackPill 3축 펌웨어)가 스텝모터 3개(M1/M2/M3)를 물고 있다. 같은 port 를
     # 쓰는 항목들이 이 번호로 자기 모터를 지정한다(1~3). 0 = 프리픽스 없음(단일 모터 호환).
     motor: int = 0
-    # 소프트 리밋(LM 가이드처럼 왕복하는 축용): 원점부터 몇 회전까지 갈 수 있는가.
-    # 0 = 리밋 없음(벨트는 무한 회전이므로 0). 리밋 스위치가 없어 위치는 펌웨어가
-    # 펄스로 추정하므로, 전원을 켤 때마다 한쪽 끝에서 '원점 설정'을 눌러야 한다.
-    limit_rev: float = 0.0
+    # 소프트 리밋(LM 가이드처럼 왕복하는 축용). 사람은 mm 로 생각하므로 mm 로 적고,
+    # 펌웨어에 보낼 회전수는 limit_rev 가 환산한다.
+    #   stroke_mm  : 원점부터 갈 수 있는 거리(mm). 0 이면 리밋 없음(벨트는 무한 회전).
+    #   mm_per_rev : 모터 1회전당 이송(mm). 볼스크류면 리드, 벨트 구동이면 풀리 원주.
+    # 리밋 스위치가 없어 위치는 펌웨어가 보낸 펄스로 세므로, 전원을 켤 때마다
+    # 축을 한쪽 끝에 두고 '원점 설정'을 눌러 기준을 잡아야 한다.
+    stroke_mm: float = 0.0
+    mm_per_rev: float = 0.0
+
+    @property
+    def limit_rev(self) -> float:
+        """펌웨어가 받는 단위(회전). 둘 중 하나라도 0 이면 리밋을 걸지 않는다."""
+        if not (self.stroke_mm and self.mm_per_rev):
+            return 0.0
+        return self.stroke_mm / self.mm_per_rev
 
 
 @dataclass(frozen=True)
@@ -241,7 +252,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             timeout_sec=float(node.get("timeout_sec", 2.0)),
             label=node.get("label") or "",
             motor=int(node.get("motor", 0)),
-            limit_rev=float(node.get("limit_rev", 0.0)),
+            stroke_mm=float(node.get("stroke_mm", 0.0)),
+            mm_per_rev=float(node.get("mm_per_rev", 0.0)),
         )
 
     conveyors: dict[str, ConveyorConfig] = {}

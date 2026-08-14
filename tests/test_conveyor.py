@@ -228,7 +228,7 @@ def test_disable_은_구동을_멈춘다(ctl):
 def test_리밋이_설정된_축은_start_때마다_리밋을_다시_보낸다(fake_serial):
     """보드가 재부팅되면 리밋이 사라진다. 매 START 에 실어 보내야 항상 적용돼 있다."""
     lm = ConveyorController(
-        ConveyorConfig(port="COM11", motor=3, limit_rev=10.0, timeout_sec=0.2)
+        ConveyorConfig(port="COM11", motor=3, stroke_mm=200.0, mm_per_rev=20.0, timeout_sec=0.2)
     )
     lm.start()
     assert "M3 LIMIT 10.000" in fake_serial.instances[-1].commands
@@ -244,7 +244,7 @@ def test_zero_는_원점을_잡고_진행_방향을_리밋_안쪽으로_돌린�
     사용자에겐 '시작을 눌러도 아무 일이 없는' 것으로 보인다. 원점을 잡으면
     갈 수 있는 방향은 +(cw) 뿐이므로 방향까지 함께 맞춘다.
     """
-    lm = ConveyorController(ConveyorConfig(port="COM11", motor=3, limit_rev=10.0))
+    lm = ConveyorController(ConveyorConfig(port="COM11", motor=3, stroke_mm=200.0, mm_per_rev=20.0))
     lm.set_direction("ccw")
     state = lm.set_zero()
 
@@ -264,7 +264,7 @@ def test_리밋이_없는_벨트의_zero_는_방향을_건드리지_않는다(fa
 
 def test_리밋_설정값은_연결_전에도_상태에_실린다():
     """대시보드가 연결 전에도 '원점 버튼을 붙일 축'을 알아야 한다."""
-    lm = ConveyorController(ConveyorConfig(port="COM11", motor=3, limit_rev=10.0))
+    lm = ConveyorController(ConveyorConfig(port="COM11", motor=3, stroke_mm=200.0, mm_per_rev=20.0))
     assert lm.state["limit_rev"] == 10.0
     belt = ConveyorController(ConveyorConfig(port="COM11", motor=1))
     assert belt.state["limit_rev"] == 0.0

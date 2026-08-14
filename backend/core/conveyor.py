@@ -292,6 +292,10 @@ class ConveyorController:
             # _state 가 덮어쓴다 — 연결 전에도 대시보드가 '리밋 있는 축'을 알아야
             # 원점 버튼을 그릴 수 있다.
             "limit_rev": self._cfg.limit_rev,
+            # 사람은 mm 로 생각한다. 회전수를 mm 로 바꿔 쓰라고 환산 계수를 같이 준다
+            # (펌웨어는 회전수만 알고, mm 는 기구 제원이라 config 에만 있다).
+            "mm_per_rev": self._cfg.mm_per_rev,
+            "stroke_mm": self._cfg.stroke_mm,
             **self._state,
         }
 
