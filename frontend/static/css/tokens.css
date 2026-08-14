@@ -24,7 +24,6 @@
      경고·불량 = 오렌지로 역할을 가른다. */
   --accent-blue:       #2f7bea;   /* 어두운 표면에 맞춰 한 톤 깊게 */
   --accent-blue-hover: #4a8ff5;
-  --accent-dusk:   #7c3aed;   /* 선택적 강조 */
 
   /* 상태 dot 전용. 텍스트나 배경에는 쓰지 않는다. */
   --dot-online:    #34d399;
@@ -45,7 +44,7 @@
 
   --fs-display: 38px;  --ls-display: -0.9px;
   --fs-title:   23px;  --ls-title:   -0.5px;
-  --fs-lead:    21px;  --ls-lead:    -0.4px;
+  --fs-lead:    21px;
   --fs-body:    16px;  --ls-body:    -0.1px;
   --fs-small:   14px;
 

@@ -1,4 +1,4 @@
-"""컨베이어(ESP32+TB6600+NEMA17) 제어 API.
+"""컨베이어(STM32F411 BlackPill + TB6600 + NEMA17) 제어 API.
 
 벨트가 여러 대다(공급 벨트 + 로봇 작업 영역 벨트). 경로의 <name> 이
 config.yaml 의 conveyors 키와 일치한다. 이름을 생략한 예전 경로는
@@ -93,12 +93,31 @@ def enable(name):
     return _ok(name, _belt(name).set_enabled(bool(body.get("enabled", True))))
 
 
+@bp.post("/servo", defaults={"name": None})
+@bp.post("/<name>/servo")
+def servo(name):
+    """분류 게이트 서보 각도. 예: {"deg": 45}  (0~180)"""
+    body = request.get_json(silent=True) or {}
+    return _ok(name, _belt(name).set_servo_deg(body.get("deg")))
+
+
+@bp.post("/zero", defaults={"name": None})
+@bp.post("/<name>/zero")
+def zero(name):
+    """현재 위치를 원점(0)으로 잡는다. 리밋 스위치가 없는 LM 가이드용.
+
+    축을 한쪽 끝으로 옮겨둔 뒤 부른다. 이후 config 의 limit_rev 범위를 벗어나면
+    펌웨어가 스스로 멈춘다. 보드 전원을 껐다 켜면 다시 잡아야 한다.
+    """
+    return _ok(name, _belt(name).set_zero())
+
+
 @bp.post("/release", defaults={"name": None})
 @bp.post("/<name>/release")
 def release(name):
     """COM 포트를 놓는다. 펌웨어를 다시 업로드할 때 쓴다.
 
-    포트는 한 번 열면 계속 잡고 있다(닫으면 ESP32 가 리셋돼 모터가 멈춘다).
+    포트는 한 번 열면 계속 잡고 있다(여닫이가 잦으면 명령이 유실될 틈이 생긴다).
     그래서 업로드하려면 포트를 비워야 하는데, 그것 때문에 서버를 통째로 내리면
     카메라까지 끊긴다. 이 엔드포인트는 포트만 놓아준다. 다음 START 에서 자동 재연결.
     """

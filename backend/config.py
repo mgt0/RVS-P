@@ -27,6 +27,9 @@ DEFECT_TYPES: tuple[str, ...] = ("scratch", "dent", "discoloration", "crack", "o
 class CameraConfig:
     name: str
     device: str | int          # /dev/v4l/by-id/... 또는 인덱스 정수
+    # 화면에 보여줄 이름("하단 뷰"). 슬롯 키(cam1..cam5)는 녹화 폴더명·parquet
+    # 컬럼명이라 바꾸지 않는다 — 표시만 이 값으로 한다. 비면 슬롯 키를 쓴다.
+    label: str = ""
     # 장치 이름으로 지목한다(권장). USB 를 다시 꽂거나 재부팅하면 인덱스는 밀리지만
     # 이름은 그대로다 — arm 의 serial_number 와 같은 역할이다.
     # 같은 이름이 여러 대면 nth 로 몇 번째인지 고른다(0-based).
@@ -49,10 +52,14 @@ class CameraConfig:
     height: int = 480
     fps: int = 30
     fourcc: str = "MJPG"       # YUYV 는 640x480@30 이상에서 USB 대역폭 부족
-    # 수동 노출(MSMF 기준 log2 초: -6 = 1/64초). None 이면 카메라 자동 노출에 맡긴다.
-    # 조명 플리커로 가로 줄무늬가 생기면 값을 키워(-5, -4) 노출을 길게 한다.
-    # 측정: 1/256초 밴딩 0.86 → 1/16초 0.25. 단 길게 하면 밝은 곳이 날아간다.
+    # 수동 노출(log2 초: -6 = 1/64초). None 이면 카메라 자동 노출에 맡긴다.
+    # 노출이 짧을수록 조명 플리커가 가로 줄무늬로 드러난다 — 실측(60Hz 형광등):
+    #   자동 2.73%, -8 11.22%, -7 0.86%, -6 0.65%, -5 0.31%, -4 0.07%
+    # 길게 할수록 좋지만 밝은 곳이 날아가므로 brightness 로 되돌려 균형을 잡는다.
     exposure: float | None = None
+    # 센서 밝기(UVC BRIGHTNESS, 대략 -64~64). 노출을 길게 잡아 플리커를 없앤 뒤
+    # 여기서 밝기를 낮춰 포화를 막는다. None 이면 카메라 기본값을 그대로 둔다.
+    brightness: float | None = None
 
     @property
     def resolution(self) -> str:
@@ -96,12 +103,20 @@ class RecordingConfig:
 
 @dataclass(frozen=True)
 class ConveyorConfig:
-    # ESP32(TB6600+NEMA17)와 USB-UART로 연결. 비어있으면 API가 503을 반환한다.
+    # 컨베이어 제어 보드(STM32F411 BlackPill)와 USB CDC 로 연결.
+    # 비어있으면 API가 503을 반환한다.
     port: str = ""
     baudrate: int = 115200
     timeout_sec: float = 2.0
     # 대시보드에 보여줄 사람용 이름 ("공급 벨트" 등). 비면 키 이름을 쓴다.
     label: str = ""
+    # 보드 하나(BlackPill 3축 펌웨어)가 스텝모터 3개(M1/M2/M3)를 물고 있다. 같은 port 를
+    # 쓰는 항목들이 이 번호로 자기 모터를 지정한다(1~3). 0 = 프리픽스 없음(단일 모터 호환).
+    motor: int = 0
+    # 소프트 리밋(LM 가이드처럼 왕복하는 축용): 원점부터 몇 회전까지 갈 수 있는가.
+    # 0 = 리밋 없음(벨트는 무한 회전이므로 0). 리밋 스위치가 없어 위치는 펌웨어가
+    # 펄스로 추정하므로, 전원을 켤 때마다 한쪽 끝에서 '원점 설정'을 눌러야 한다.
+    limit_rev: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -111,6 +126,11 @@ class ServerConfig:
     debug: bool = False
     # 하드웨어 없이 UI/파이프라인만 확인할 때 True
     simulate: bool = False
+    # MJPEG 프리뷰 전용 포트. 브라우저는 '오리진당' 동시 연결이 6개로 묶여 있는데,
+    # 카메라 6대 스트림이 연결을 하나씩 영구 점유하면 그 6개를 다 써버려 API 요청이
+    # 큐에서 무한 대기한다(실측: 버튼을 눌러도 요청이 나가지 않고 화면이 굳는다).
+    # 포트가 다르면 별개 오리진이라 연결 예산도 따로 잡힌다. 0 이면 분리하지 않는다.
+    stream_port: int = 5001
 
 
 @dataclass(frozen=True)
@@ -142,6 +162,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         debug=bool(server_raw.get("debug", False)),
         # 환경변수가 YAML 을 이긴다: 같은 config.yaml 로 데모/실기를 전환하기 위함
         simulate=_env_bool("OMX_SIMULATE", server_raw.get("simulate", False)),
+        stream_port=int(server_raw.get("stream_port", 5001)),
     )
 
     safety_raw = raw.get("safety", {})
@@ -191,6 +212,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         cameras[name] = CameraConfig(
             name=name,
             device=node.get("device", idx),
+            label=node.get("label") or "",
             match_name=node.get("match_name"),
             nth=int(node.get("nth", 0)),
             vflip=bool(node.get("vflip", False)),
@@ -203,6 +225,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             fps=int(node.get("fps", 30)),
             fourcc=node.get("fourcc", "MJPG"),
             exposure=None if node.get("exposure") is None else float(node["exposure"]),
+            brightness=None if node.get("brightness") is None else float(node["brightness"]),
             lock_white_balance=bool(node.get("lock_white_balance", False)),
             white_balance=(
                 None if node.get("white_balance") is None else float(node["white_balance"])
@@ -217,6 +240,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             baudrate=int(node.get("baudrate", 115200)),
             timeout_sec=float(node.get("timeout_sec", 2.0)),
             label=node.get("label") or "",
+            motor=int(node.get("motor", 0)),
+            limit_rev=float(node.get("limit_rev", 0.0)),
         )
 
     conveyors: dict[str, ConveyorConfig] = {}

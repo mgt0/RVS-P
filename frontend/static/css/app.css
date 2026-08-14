@@ -614,31 +614,6 @@ html, body {
 
 .joint-bar__val { text-align: right; color: var(--ink); }
 
-/* ---------- 혼동 행렬 ---------- */
-.confusion {
-  display: grid;
-  grid-template-columns: 90px 1fr 1fr;
-  gap: var(--s-2);
-  align-items: center;
-  max-width: 520px;
-}
-
-.confusion__rowlabel { text-align: right; padding-right: var(--s-2); }
-
-.confusion__cell {
-  padding: var(--s-6) var(--s-4);
-  background: var(--canvas-soft);
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-card);
-  text-align: center;
-  font-family: var(--font-mono);
-  font-size: var(--fs-lead);
-  color: var(--body);
-  font-variant-numeric: tabular-nums;
-}
-/* 정답 대각선만 흰색으로 강조 (색 남발 없이 위계만) */
-.confusion__cell--ok { color: var(--ink); border-color: var(--outline); }
-
 /* ---------- 3D 뷰어 ---------- */
 .viewer { position: relative; }
 
@@ -691,7 +666,6 @@ select.input option { background: var(--canvas-card); color: var(--body); }
 
 @media (max-width: 720px) {
   .viewer__canvas { height: 380px; }
-  .confusion { grid-template-columns: 64px 1fr 1fr; }
   /* 좁은 화면에서는 2열로 접는다. 헤더 행은 의미가 없어지므로 감춘다. */
   .ep-row { grid-template-columns: 1fr 1fr; }
   .ep-row--head { display: none; }

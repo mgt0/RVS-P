@@ -23,6 +23,9 @@ def meta():
             "sample_rate_hz": hub.cfg.recording.sample_rate_hz,
             "max_relative_target": hub.cfg.safety.max_relative_target,
             "next_episode_id": hub.recorder.index.next_episode_id(),
+            # 프리뷰를 어느 포트에서 받을지. 브라우저의 오리진당 연결 한도(6개)를
+            # 스트림이 다 먹지 않도록 분리한다 — 자세한 이유는 ServerConfig 주석.
+            "stream_port": hub.cfg.server.stream_port,
         }
     )
 

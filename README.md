@@ -103,13 +103,15 @@ CNN 쪽은 에피소드 전체가 아니라 **대표 한 세트**만 남깁니�
 lerobot_data/
 ├── episodes/
 │   └── episode_000042/
-│       ├── camera_front/frame_000000.jpg …
-│       ├── camera_back/  camera_left/  camera_right/  camera_top/
+│       ├── camera_cam1/frame_000000.jpg …
+│       ├── camera_cam2/ … camera_cam5/
 │       ├── joint_states.parquet
 │       └── metadata.json
 └── classification/
-    ├── good/<object_id>/{front,back,left,right,top}.jpg + labels.json
-    └── defect/<object_id>/{front,back,left,right,top}.jpg + labels.json
+    ├── good/<object_id>/{cam1..cam5}.jpg + labels.json
+    └── defect/<object_id>/{cam1..cam5}.jpg + labels.json
+├── background/{cam1..cam5}.jpg   ← '배경 캡처' 가 저장하는 빈 스캔대 참조
+└── models/<object_id>.stl        ← '기준 모델 등록' 이 저장하는 CAD
 ```
 
 `joint_states.parquet` 컬럼:
@@ -121,7 +123,7 @@ lerobot_data/
 | `sync_skew_ms` | 해당 프레임 세트의 카메라 간 시간 편차 |
 | `leader_joint_{0..4}` | 리더 관절 각도 (deg) |
 | `follower_joint_{0..4}` | 팔로워 관절 각도 (deg) |
-| `ts_{front..top}` | 카메라별 캡처 시각 (monotonic) |
+| `ts_{cam1..cam5}` | 카메라별 캡처 시각 (monotonic) |
 
 `metadata.json` 의 `monotonic_offset` 을 더하면 monotonic → epoch 로 복원됩니다.
 (monotonic 을 쓰는 이유: wall clock 은 NTP 보정으로 역행할 수 있어 프레임 정렬에 부적합)
@@ -143,7 +145,11 @@ lerobot_data/
 | POST | `/api/recording/{start,stop}` | 수집 제어 |
 | GET | `/api/episodes` | 저장된 에피소드 목록 (metadata.json) |
 | PATCH | `/api/episodes/<id>` | 라벨·물체 ID 수정 (분류 폴더도 함께 이동) |
-| DELETE | `/api/episodes/<id>` | 에피소드 삭제 (녹화 중이면 거부) |
+| DELETE | `/api/episodes/<id>` | 에피소드 삭제 (마지막 참조면 분류 이미지도 정리) |
+| POST | `/api/emergency_stop` | 비상 정지 — 텔레오퍼·전 벨트·녹화 일괄 정지 |
+| GET/POST | `/api/conveyor/status`, `/api/conveyor/<name>/{start,stop,speed,dir,release}` | 컨베이어(다중 벨트) 제어 |
+| GET/POST | `/api/scan/model/<object_id>` | CAD 기준 모델(STL) 조회/업로드 |
+| POST | `/api/scan/background` | 빈 스캔대 배경 캡처 (배경 차분용) |
 | POST | `/api/teleop/{start,stop}` | 텔레오퍼레이션 |
 | POST | `/api/arm/home` | 홈 복귀 (녹화 중 거부) |
 | POST | `/api/train/{start,stop}` | ACT 학습 제어 (demo/lerobot 모드) |
@@ -205,9 +211,10 @@ Success@τ는 **모든 관절이 동시에** 임계값 이내일 때만 성공�
 
 **DEMO 모드**는 GPU·데이터셋 없이 실제 학습 곡선(loss 지수 감소 + success 상승)을 재현해
 대시보드를 즉시 확인할 수 있습니다. 이때도 값은 진짜 `compute_metrics()` 를 통과하므로
-차트 로직이 실제와 동일하게 검증됩니다. **LEROBOT 모드**는 실제 lerobot ACT 학습에
-연결하는 지점(`act_trainer.py`의 `LeRobotTrainer.run`)만 환경의 lerobot 버전에 맞춰
-교체하면 됩니다.
+차트 로직이 실제와 동일하게 검증됩니다. **LEROBOT 모드**를 선택하면 실제 학습은 별도
+프로세스로 안내합니다 — `scripts/to_lerobot.py` 로 변환 후 `lerobot-train` CLI 를 쓰는
+것이 정석입니다(위 "실제 ACT 학습" 절 참조). 카메라 5대와 시리얼 포트를 쥔 서버 안에서
+GPU 학습을 돌릴 이유가 없습니다.
 
 실시간 전송은 **SSE**(Server-Sent Events)를 씁니다. 폴링은 간격만큼 늘 뒤처지지만, SSE는
 에폭이 끝나는 즉시 차트가 자랍니다.
@@ -216,7 +223,7 @@ Success@τ는 **모든 관절이 동시에** 임계값 이내일 때만 성공�
 
 5뷰 스캔 이미지에서 3D 형상을 만들어 마우스로 돌려가며 검사합니다.
 
-**왜 포토그래메트리 대신 Visual Hull인가.** front/back/left/right/top 5장은 90도씩 벌어져
+**왜 포토그래메트리 대신 Visual Hull인가.** cam1~cam5 의 5뷰는 서로 크게 벌어져
 있어 COLMAP 같은 SfM의 특징점 매칭이 거의 실패합니다(보통 겹침 큰 수십~수백 장 필요).
 대신 **실루엣 기반 space carving**을 씁니다:
 

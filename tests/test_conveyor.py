@@ -1,6 +1,6 @@
 """컨베이어 제어 계층 테스트.
 
-실물 ESP32 없이 검증한다. FakeSerial 이 펌웨어(conveyor_stepper.ino)의 명령/응답
+실물 보드 없이 검증한다. FakeSerial 이 펌웨어(conveyor_blackpill.ino)의 명령/응답
 규칙을 그대로 흉내내므로, 프로토콜이 어긋나면 여기서 먼저 깨진다.
 """
 
@@ -22,7 +22,8 @@ from backend.utils.errors import ConveyorError, ValidationError
 class FakeSerial:
     """conveyor_stepper.ino 의 시리얼 동작을 흉내내는 스텁.
 
-    - 포트를 열면(=인스턴스 생성) ESP32 가 리셋되므로 부팅 로그와 READY 를 먼저 뱉는다.
+    - 가장 불리한 경우(리셋형 보드/방금 부팅한 BlackPill)를 흉내내 부팅 로그와
+      READY 를 먼저 뱉는다. 호스트는 이 잡음을 응답으로 오해하면 안 된다.
     - 명령마다 한 줄 응답. STATUS 는 JSON 한 줄.
     """
 
@@ -48,7 +49,7 @@ class FakeSerial:
             "steps_per_rev": 1600,
         }
         if self.boot_banner:
-            # 실제 ESP32-S3 도 부트로더 잡음을 먼저 뱉는다. 호스트가 이걸 응답으로
+            # 리셋 직후 보드는 부트 잡음을 먼저 뱉는다. 호스트가 이걸 응답으로
             # 오해하지 않는지 확인하려고 일부러 섞어둔다.
             self._out.append("ESP-ROM:esp32s3-20210327")
             self._out.append("READY: Conveyor Controller Initialized")
@@ -77,6 +78,10 @@ class FakeSerial:
 
     # ---- 펌웨어 흉내
     def _reply(self, cmd: str) -> str:
+        # 3축 펌웨어의 모터 지정 프리픽스("M2 START"). 실제 펌웨어처럼 떼고 처리한다
+        # (여기서는 모터별 상태를 나누지 않는다 — 프로토콜 형식 검증이 목적이다).
+        if len(cmd) >= 3 and cmd[0] == "M" and cmd[1] in "123" and cmd[2] == " ":
+            cmd = cmd[3:]
         if cmd == "START":
             self.state.update(running=True, rpm=self.state["target_rpm"])
             return "OK: STARTED"
@@ -97,6 +102,18 @@ class FakeSerial:
                 return "ERR: DIR 인자는 CW 또는 CCW"
             self.state["dir"] = arg
             return f"OK: DIR={arg.upper()}"
+        if cmd == "ZERO":
+            self.state["pos_rev"] = 0.0
+            return "OK: ZERO"
+        if cmd.startswith("LIMIT "):
+            self.state["limit_rev"] = float(cmd[6:])
+            return f"OK: LIMIT={self.state['limit_rev']:.2f}"
+        if cmd.startswith("SERVO "):
+            deg = int(cmd[6:])
+            if not 0 <= deg <= 180:
+                return "ERR: SERVO 각도는 0~180"
+            self.state["servo_deg"] = deg
+            return f"OK: SERVO={deg}"
         if cmd in ("ENABLE", "DISABLE"):
             self.state["enabled"] = cmd == "ENABLE"
             if cmd == "DISABLE":
@@ -111,6 +128,10 @@ class FakeSerial:
 def fake_serial(monkeypatch):
     FakeSerial.instances.clear()
     FakeSerial.boot_banner = True
+    # 포트 공유 레지스트리는 모듈 전역이다. 이전 테스트의 핸들이 남으면
+    # 새 테스트가 포트를 다시 열지 않아 instances 계수가 어긋난다.
+    conveyor_mod._ports.clear()
+    conveyor_mod._port_locks.clear()
     monkeypatch.setattr(conveyor_mod.serial, "Serial", FakeSerial)
     return FakeSerial
 
@@ -126,7 +147,9 @@ def test_start_는_부팅배너를_소비한_뒤_명령을_보낸다(ctl, fake_s
     state = ctl.start()
 
     ser = fake_serial.instances[-1]
-    assert ser.commands == ["START", "STATUS"]  # 부팅 로그를 응답으로 오해하지 않았다
+    # 첫 연결은 PING 프로브로 시작한다 — 배너가 없는 보드(BlackPill)에서
+    # 타임아웃 5초를 통째로 기다리지 않기 위한 능동 확인이다(실측 6.1초→0.05초).
+    assert ser.commands == ["PING", "START", "STATUS"]  # 부팅 로그를 응답으로 오해하지 않았다
     assert state["running"] is True
     assert state["connected"] is True
 
@@ -144,7 +167,7 @@ def test_release_후_status_는_포트를_다시_열지_않는다(ctl, fake_seri
 
     state = ctl.status()
 
-    # 여기서 포트를 다시 열면 ESP32 가 리셋돼 돌던 컨베이어가 멈춘다.
+    # 여기서 포트를 다시 열면 펌웨어 업로드를 방해한다(리셋형 보드면 모터도 멈춘다).
     assert len(fake_serial.instances) == opened
     assert state["connected"] is False
     assert state["running"] is False
@@ -155,7 +178,24 @@ def test_release_후_start_하면_자동_재연결한다(ctl, fake_serial):
     ctl.disconnect()
     ctl.start()
     assert len(fake_serial.instances) == 2
-    assert fake_serial.instances[-1].commands[0] == "START"
+    # 재연결도 PING 프로브부터 시작한 뒤 본 명령이 나간다
+    assert fake_serial.instances[-1].commands[:2] == ["PING", "START"]
+
+
+def test_같은_포트의_모터들은_시리얼을_공유하고_프리픽스를_붙인다(fake_serial):
+    """보드 1대(BlackPill) + 모터 3개: 포트는 한 번만 열리고 명령은 M<n> 로 갈린다."""
+    feed = ConveyorController(ConveyorConfig(port="COM11", motor=1, timeout_sec=0.2))
+    lm = ConveyorController(ConveyorConfig(port="COM11", motor=3, timeout_sec=0.2))
+
+    feed.start()
+    lm.start()
+
+    assert len(fake_serial.instances) == 1  # 같은 보드 = 포트 1개
+    cmds = fake_serial.instances[0].commands
+    assert "M1 START" in cmds and "M3 START" in cmds
+    # 한쪽을 release 하면 보드 전체가 끊긴다(물리적으로 한 포트다)
+    feed.disconnect()
+    assert lm.connected is False
 
 
 # --------------------------------------------------------------------- 명령
@@ -183,6 +223,51 @@ def test_disable_은_구동을_멈춘다(ctl):
     state = ctl.set_enabled(False)
     assert state["enabled"] is False
     assert state["running"] is False
+
+
+def test_리밋이_설정된_축은_start_때마다_리밋을_다시_보낸다(fake_serial):
+    """보드가 재부팅되면 리밋이 사라진다. 매 START 에 실어 보내야 항상 적용돼 있다."""
+    lm = ConveyorController(
+        ConveyorConfig(port="COM11", motor=3, limit_rev=10.0, timeout_sec=0.2)
+    )
+    lm.start()
+    assert "M3 LIMIT 10.000" in fake_serial.instances[-1].commands
+    # 리밋이 없는 축(벨트)은 보내지 않는다 — 무한 회전이라 제한이 없다
+    belt = ConveyorController(ConveyorConfig(port="COM11", motor=1, timeout_sec=0.2))
+    belt.start()
+    assert not any(c.startswith("M1 LIMIT") for c in fake_serial.instances[-1].commands)
+
+
+def test_zero_는_원점을_잡고_진행_방향을_리밋_안쪽으로_돌린다(fake_serial):
+    """회귀: ccw 인 채로 원점을 잡으면 곧바로 하한이라 START 가 거부됐다.
+
+    사용자에겐 '시작을 눌러도 아무 일이 없는' 것으로 보인다. 원점을 잡으면
+    갈 수 있는 방향은 +(cw) 뿐이므로 방향까지 함께 맞춘다.
+    """
+    lm = ConveyorController(ConveyorConfig(port="COM11", motor=3, limit_rev=10.0))
+    lm.set_direction("ccw")
+    state = lm.set_zero()
+
+    cmds = fake_serial.instances[-1].commands
+    assert "M3 ZERO" in cmds
+    assert cmds.index("M3 ZERO") < cmds.index("M3 DIR CW")  # 원점을 먼저, 방향은 그 뒤
+    assert state["dir"] == "cw"
+
+
+def test_리밋이_없는_벨트의_zero_는_방향을_건드리지_않는다(fake_serial):
+    """벨트는 무한 회전이라 진행 방향이 사용자의 선택이다. 멋대로 되돌리면 안 된다."""
+    belt = ConveyorController(ConveyorConfig(port="COM11", motor=1))
+    belt.set_direction("ccw")
+    belt.set_zero()
+    assert not any(c == "M1 DIR CW" for c in fake_serial.instances[-1].commands)
+
+
+def test_리밋_설정값은_연결_전에도_상태에_실린다():
+    """대시보드가 연결 전에도 '원점 버튼을 붙일 축'을 알아야 한다."""
+    lm = ConveyorController(ConveyorConfig(port="COM11", motor=3, limit_rev=10.0))
+    assert lm.state["limit_rev"] == 10.0
+    belt = ConveyorController(ConveyorConfig(port="COM11", motor=1))
+    assert belt.state["limit_rev"] == 0.0
 
 
 # --------------------------------------------------------------------- 오류
@@ -262,6 +347,23 @@ def test_이름_경로도_같은_벨트를_제어한다(client):
     assert client.post("/api/conveyor/stop").get_json()["running"] is False
 
 
+def test_api_zero(client):
+    body = client.post("/api/conveyor/main/zero").get_json()
+    assert body["ok"] is True
+    assert body["pos_rev"] == 0.0
+
+
 def test_api_release(client):
     body = client.post("/api/conveyor/release").get_json()
     assert body["released"] is True
+
+
+def test_servo_각도를_지정하고_범위를_검증한다(ctl):
+    state = ctl.set_servo_deg(45)
+    assert state["servo_deg"] == 45
+    import pytest as _pytest
+    from backend.utils.errors import ValidationError
+    with _pytest.raises(ValidationError):
+        ctl.set_servo_deg(181)
+    with _pytest.raises(ValidationError):
+        ctl.set_servo_deg("abc")

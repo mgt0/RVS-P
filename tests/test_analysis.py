@@ -689,5 +689,5 @@ class TestEmergencyStop:
         assert d["ok"] is True
         assert d["teleop"]["running"] is False
         # 설정된 벨트 전부에 대해 결과가 보고돼야 한다(부분 실패도 항목으로 남는다)
-        assert set(d["conveyors"]) == {"feed", "work"}
+        assert set(d["conveyors"]) == {"feed", "work", "lm"}
         assert d["recording"] in ("idle", "aborted")

@@ -1,13 +1,21 @@
 # ==============================================================
 # OMX Scan Control 설정
-# 실기 배포 전 반드시 arms.*.serial_number 와 cameras.*.device 를
-# 실제 장비 값으로 채우세요. 비워두면 /dev 번호에 의존하게 되고,
-# 재부팅 시 리더/팔로워가 뒤바뀔 수 있습니다.
+# 실기 배포 전 확인할 것:
+#   arms.*        — serial_number(권장) 또는 port_hint. 비워두면 재부팅 시
+#                   리더/팔로워가 뒤바뀔 수 있다.
+#   cameras.*     — match_name + nth 로 장치 이름 매칭(인덱스는 USB 재연결에
+#                   밀린다). 대응 확인: python scripts/find_cameras.py
+#   conveyors.*   — 벨트별 COM 포트. 장치관리자에서 확인.
 # ==============================================================
 
 server:
   host: 0.0.0.0
   port: 5000
+  # MJPEG 프리뷰만 받는 두 번째 포트. 브라우저는 '오리진당' 동시 연결이 6개인데
+  # 카메라 6대 스트림이 연결을 하나씩 영구 점유해 그 예산을 다 써버리면, API 요청이
+  # 큐에서 무한 대기한다 — 버튼을 눌러도 반응이 없고 잠긴 채 굳는다(실측 2026-08-14).
+  # 포트가 다르면 오리진이 달라 연결 예산도 따로 잡힌다. 0 이면 분리하지 않는다.
+  stream_port: 5001
   debug: false
   # 하드웨어 없이 UI/수집 파이프라인만 검증할 때 true.
   # 환경변수 OMX_SIMULATE=1 이 이 값을 덮어씁니다.
@@ -19,17 +27,17 @@ arms:
     baudrate: 1000000
     # `udevadm info -a -n /dev/ttyACM0 | grep serial` 로 확인
     serial_number: null
-    port_hint: com6
-    joint_ids: [1, 2, 3, 4, 5]
-    home_position: [0.0, -90.0, 90.0, 0.0, 0.0]
+    port_hint: COM6   # 관절 ID 1~6 확인됨 (6 = 그리퍼)
+    joint_ids: [1, 2, 3, 4, 5, 6]
+    home_position: [0.0, -90.0, 90.0, 0.0, 0.0, 0.0]
 
   follower:
     model: OMX-F
     baudrate: 1000000
     serial_number: null 
-    port_hint: COM8
+    port_hint: COM7
     joint_ids: [11, 12, 13, 14, 15, 16]
-    home_position: [0.0, -90.0, 90.0, 0.0, 0.0]
+    home_position: [0.0, -90.0, 90.0, 0.0, 0.0, 0.0]
 
 safety:
   # 1 tick(20ms) 당 허용 관절 변화량(deg).
@@ -41,6 +49,7 @@ safety:
     - [-120.0, 120.0]
     - [-180.0, 180.0]
     - [-100.0, 100.0]
+    - [-180.0, 180.0]   # 그리퍼 — current 기반 모드라 과도 조임은 전류 리밋이 막는다
   homing_speed_deg_per_s: 30.0
   watchdog_timeout_ms: 500
 
@@ -66,8 +75,9 @@ cameras:
   #   값을 키울수록(-4 방향) 밴딩이 줄지만 밝은 부분이 날아간다.
   #   근본 해결은 DC 구동(무플리커) 조명. 노출 조정은 임시 완화책이다.
   # nth 는 DirectShow 열거 순서상 몇 번째 Arducam 인지를 뜻한다.
-  # cam4/cam5 의 nth 가 4/3 인 것은 오타가 아니다 — 이전 RIGHT/TOP 슬롯에
-  # 들어오던 카메라가 서로 바뀌어 있어 여기서 맞바꿨다.
+  # 순서가 뒤죽박죽인 것은 오타가 아니다 — USB 재배선 후 화면에서 실제 뷰를
+  # 보고 맞춘 값이다(2026-08-14). 케이블을 옮기면 다시 틀어질 수 있으니
+  # 틀어지면 nth 값만 서로 바꿔 맞춘다.
   # vflip: 거꾸로 매달린 카메라를 상하 반전한다(프리뷰·녹화 모두 적용).
   # view_dir: 3D 재구성용 '물체 → 카메라' 방향 [x, y, z].
   #   +X 오른쪽, +Y 위, +Z 앞(정면). 크기는 무관하다(정규화한다).
@@ -80,21 +90,22 @@ cameras:
   # 각도를 바꿨을 때 좋아졌는지는 재구성 결과의 stats.view_dir_consistency 로 본다.
   # 단, 그 값은 큰 오차만 잡아낸다 — 미세 조정의 근거로는 못 쓴다(합성 검증에서
   # 20° 틀린 배치가 정답보다 높은 점수를 받았다). 실제 배치를 재는 게 가장 정확하다.
-  # lock_white_balance: 자동 화이트밸런스를 끈다. 배경 차분을 쓰려면 사실상 필수다.
-  #   자동 WB 는 화면에 물체가 들어오면 색온도를 다시 잡는데, 그러면 배경 참조와
-  #   촬영본의 색조가 통째로 달라져 화면 전체가 '배경과 다른 곳'이 된다.
+  # lock_white_balance: 이 Arducam 에서는 false 로 둔다. 자동 WB 를 끄는 순간
+  #   드라이버 기본 색온도로 튀어 화면 전체가 초록이 된다(실측 — 수렴 후에 꺼도
+  #   '현재 값 고정'이 아니라 기본값 복귀였다). 배경 차분의 색조 드리프트는
+  #   reconstruct3d 의 _match_exposure / _saturation_mask 가 보정한다.
+  #   색온도를 진짜로 고정해야 하면 white_balance: 4600 처럼 값을 함께 지정할 것.
   #
   # exposure 도 같이 고정해야 배경 참조가 오래간다. 값은 실측으로 정한다:
   #   (대시보드를 끄고) python scripts/find_cameras.py --tune-exposure
   #   출력된 값을 각 줄에 exposure: -5 처럼 추가한다.
-  cam1: { match_name: Arducam, nth: 0, vflip: true,  lock_white_balance: true, view_dir: [ 0.5,  0.7071, 0.5   ], width: 640, height: 480, fps: 15, fourcc: MJPG }  # 오른쪽 대각선 위 (방위 +45°, 고도 +45°)
-  cam2: { match_name: Arducam, nth: 1, vflip: true,  lock_white_balance: true, view_dir: [-0.5,  0.7071, 0.5   ], width: 640, height: 480, fps: 15, fourcc: MJPG }  # 왼쪽 대각선 위   (방위 -45°, 고도 +45°)
-  cam3: { match_name: Arducam, nth: 2, vflip: true,  lock_white_balance: true, view_dir: [-0.7071, 0.0,   0.7071], width: 640, height: 480, fps: 15, fourcc: MJPG }  # 왼쪽 대각선      (방위 -45°, 고도   0°)
-  cam4: { match_name: Arducam, nth: 4, vflip: false, lock_white_balance: true, view_dir: [ 0.7071, 0.0,   0.7071], width: 640, height: 480, fps: 15, fourcc: MJPG }  # 오른쪽 대각선    (방위 +45°, 고도   0°)
-  cam5: { match_name: Arducam, nth: 3, vflip: false, lock_white_balance: true, view_dir: [ 0.0,   -1.0,   0.0   ], width: 640, height: 480, fps: 15, fourcc: MJPG }  # 하단 뷰
-  # 실물 카메라가 5대뿐이라 글로벌 캠은 아직 없다. 6번째를 달면 enabled 를 지우고
-  # match_name/nth 를 채우면 된다.
-  global: { enabled: false }
+  cam1: { label: 오른쪽 위 대각 캠, match_name: Arducam, nth: 2, vflip: true,  lock_white_balance: false, view_dir: [ 0.5,  0.7071, 0.5   ], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 오른쪽 대각선 위 (방위 +45°, 고도 +45°)
+  cam2: { label: 왼쪽 위 대각 캠, match_name: Arducam, nth: 3, vflip: false,  lock_white_balance: false, view_dir: [-0.5,  0.7071, 0.5   ], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 왼쪽 대각선 위   (방위 -45°, 고도 +45°)
+  cam3: { label: 왼쪽 대각 캠, match_name: Arducam, nth: 4, vflip: true,  lock_white_balance: false, view_dir: [-0.7071, 0.0,   0.7071], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 왼쪽 대각선      (방위 -45°, 고도   0°)
+  cam4: { label: 오른쪽 수평 캠, match_name: Arducam, nth: 1, vflip: true, lock_white_balance: false, view_dir: [ 0.7071, 0.0,   0.7071], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 오른쪽 대각선    (방위 +45°, 고도   0°)
+  cam5: { label: 하단 뷰 캠, match_name: Arducam, nth: 0, vflip: false, lock_white_balance: false, view_dir: [ 0.0,   -1.0,   0.0   ], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 하단 뷰
+  # 글로벌 캠 = 로지텍 C270. 전체 작업 공간 조망용 — 3D 재구성에는 안 쓴다(view_dir 없음).
+  global: { label: 글로벌 뷰 캠, match_name: C270, nth: 0, width: 640, height: 480, fps: 15, fourcc: MJPG }
 
 recording:
   root: ./lerobot_data
@@ -105,17 +116,34 @@ recording:
   jpeg_quality: 90
   queue_maxsize: 512
 
-# 컨베이어 벨트. 키(feed/work)가 API 경로의 이름이 된다: /api/conveyor/feed/start
-# ESP32(TB6600+NEMA17)가 USB로 꽂히는 COM 포트는 장치관리자에서 확인.
-# 두 번째 벨트를 달면 그 보드의 COM 포트를 work.port 에 채우면 끝 — 코드 수정 불필요.
+# 스텝모터 3축. 키(feed/work/lm)가 API 경로의 이름이 된다: /api/conveyor/feed/start
+# 제어 보드는 STM32F411 BlackPill(DFR0864) 1대 + TB6600 3개 — 세 항목이 같은 COM
+# 포트를 공유하고 motor 번호(M1/M2/M3)로 자기 모터를 지정한다.
+# 펌웨어: firmware/conveyor_blackpill/ (빌드 방법·배선은 파일 머리주석 참조)
+#   M1 (컨베이어 1): PUL PA0, DIR PA1, ENA PA2
+#   M2 (컨베이어 2): PUL PA3, DIR PA6, ENA PA7
+#   M3 (LM 가이드) : PUL PB0, DIR PB1, ENA PA8
 conveyors:
   feed:
     label: 공급 벨트
-    port: COM12
+    port: COM13
+    motor: 1
     baudrate: 115200
     timeout_sec: 2.0
   work:
     label: 로봇 작업 벨트
-    port: ""          # 아직 미설치. 비워두면 해당 벨트만 503, 나머지는 정상 동작.
+    port: COM13
+    motor: 2
     baudrate: 115200
     timeout_sec: 2.0
+  lm:
+    label: LM 가이드
+    port: COM13
+    motor: 3
+    baudrate: 115200
+    timeout_sec: 2.0
+    # 소프트 리밋: 원점부터 몇 회전까지 갈 수 있는가. 리밋 스위치가 없어 위치는
+    # 펌웨어가 펄스로 추정하므로, 전원을 켤 때마다 축을 한쪽 끝에 두고 대시보드의
+    # '원점' 버튼을 눌러야 한다. 값은 실측으로 정할 것 — 스트로크(mm) ÷ 1회전 이송(mm).
+    # 일단 보수적으로 잡아뒀다. 끝까지 못 가면 늘리고, 부딪히면 줄인다. 0 = 리밋 해제.
+    limit_rev: 10.0

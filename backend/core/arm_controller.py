@@ -35,6 +35,12 @@ DXL_RESOLUTION = 4096          # 1회전 = 4096 tick
 DXL_CENTER = 2048
 
 
+def s32(value: int) -> int:
+    """SDK 는 4바이트 레지스터를 unsigned 로 반환한다. extended position mode
+    (실기 전 관절이 이 모드다)에서 0 아래로 내려간 위치는 음수라 변환이 필수다."""
+    return value - 0x1_0000_0000 if value >= 0x8000_0000 else value
+
+
 def ticks_to_deg(ticks: int) -> float:
     return (ticks - DXL_CENTER) * 360.0 / DXL_RESOLUTION
 
@@ -155,7 +161,7 @@ class DynamixelBackend:
                 raise ArmConnectionError(
                     self._cfg.role, f"관절 {dxl_id} 위치 읽기 실패", joint_id=dxl_id
                 )
-            out.append(ticks_to_deg(value))
+            out.append(ticks_to_deg(s32(value)))
         return out
 
     def write_positions(self, degrees: Sequence[float]) -> None:
@@ -221,6 +227,10 @@ class ArmController:
         self._connected = False
         self._last_positions: list[float] = list(cfg.home_position)
         self._last_read_at = 0.0
+        # raw(모터 좌표계) − 논리(리더 좌표계) 오프셋. 실기 모터는 extended
+        # position mode 라 멀티턴 누적·조립 편차로 절대각이 리더와 어긋난다.
+        # align_to() 가 채우기 전까지는 0 (raw = 논리).
+        self._offset: list[float] = [0.0] * len(cfg.joint_ids)
         self._lock = threading.RLock()
 
     @property
@@ -237,7 +247,29 @@ class ArmController:
                 return
             self._backend.connect()
             self._connected = True
-            self._last_positions = self._backend.read_positions()
+            self._last_positions = self._read_logical()
+            self._last_read_at = time.monotonic()
+
+    def _read_logical(self) -> list[float]:
+        raw = self._backend.read_positions()
+        return [r - o for r, o in zip(raw, self._offset)]
+
+    def _to_raw(self, logical: Sequence[float]) -> list[float]:
+        return [v + o for v, o in zip(logical, self._offset)]
+
+    def align_to(self, reference: Sequence[float]) -> None:
+        """현재 물리 자세를 reference(리더 좌표계) 각도로 간주하도록 정렬한다.
+
+        텔레오퍼 시작 시 팔로워에 리더의 현재 자세를 넘겨 호출한다. 이후의
+        읽기/쓰기·소프트리밋·홈 복귀가 전부 리더 좌표계에서 동작하므로,
+        모터의 멀티턴 누적값이 얼마든 시작 순간 팔로워가 휘두르지 않는다.
+        """
+        with self._lock:
+            if not self._connected:
+                raise ArmConnectionError(self.cfg.role, "arm 이 연결되지 않았습니다.")
+            raw = self._backend.read_positions()
+            self._offset = [r - ref for r, ref in zip(raw, reference)]
+            self._last_positions = list(reference)
             self._last_read_at = time.monotonic()
 
     def set_torque(self, enabled: bool) -> None:
@@ -262,7 +294,7 @@ class ArmController:
         with self._lock:
             if not self._connected:
                 return list(self._last_positions)
-            self._last_positions = self._backend.read_positions()
+            self._last_positions = self._read_logical()
             self._last_read_at = time.monotonic()
             return list(self._last_positions)
 
@@ -272,7 +304,7 @@ class ArmController:
             current = self._last_positions
             clamped, touched = self._guard.clamp(target, current)
             if self._connected:
-                self._backend.write_positions(clamped)
+                self._backend.write_positions(self._to_raw(clamped))
             self._last_positions = clamped
             if touched:
                 logger.debug("%s: safety clamp applied", self.cfg.role)
@@ -300,7 +332,7 @@ class ArmController:
                     for c, r in zip(current, remaining)
                 ]
                 if self._connected:
-                    self._backend.write_positions(nxt)
+                    self._backend.write_positions(self._to_raw(nxt))
                 self._last_positions = nxt
                 time.sleep(1.0 / step_hz)
 

@@ -22,3 +22,6 @@ lerobot_data/models/
 
 # 배경 참조 이미지는 리그·조명마다 다르다(코드가 아니라 현장 데이터)
 lerobot_data/background/
+
+# 펌웨어 빌드 산출물 (arduino-cli --export-binaries). 소스만 버전관리한다.
+firmware/*/build/

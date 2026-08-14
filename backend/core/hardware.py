@@ -131,6 +131,11 @@ class HardwareHub:
                 return {"running": True, "fault": self._teleop.fault}
             self.leader.connect()
             self.follower.connect()
+            # 팔로워 좌표계를 리더의 현재 자세에 정렬한다. 실기 모터는 extended
+            # position mode 라 절대각이 리더와 어긋나(실측 베이스 ~181° 차이),
+            # 정렬 없이 절대각을 미러링하면 시작 순간 크게 휘두른다.
+            # 사용자는 텔레오퍼 시작 전에 두 팔을 비슷한 자세로 맞춰두면 된다.
+            self.follower.align_to(self.leader.read())
             # 리더는 사람이 손으로 움직여야 하므로 토크를 끄고(백드라이버블),
             # 팔로워는 명령을 물리적으로 따라가야 하므로 토크를 켠다.
             self.leader.set_torque(False)
