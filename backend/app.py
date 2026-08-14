@@ -124,13 +124,21 @@ def _register_error_handlers(app: Flask) -> None:
 
 
 def _register_frontend(app: Flask) -> None:
+    # 프런트엔드는 빌드 스텝이 없어 파일을 고치면 그게 곧 배포본이다. 브라우저가
+    # 캐시를 들고 있으면 고친 코드가 반영되지 않고, 이미 고친 버그가 계속 재현돼
+    # 엉뚱한 곳을 파게 된다(실측으로 그랬다). 노트북 한 대에서 로컬로 주는 파일이라
+    # 캐시로 아낄 것도 없다 — 끈다. 그 대신 '강력 새로고침' 을 요구하지 않아도 된다.
+    def _no_cache(response):
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+        return response
+
     @app.get("/")
     def index():
-        return send_from_directory(FRONTEND_DIR, "index.html")
+        return _no_cache(send_from_directory(FRONTEND_DIR, "index.html"))
 
     @app.get("/static/<path:filename>")
     def static_files(filename: str):
-        return send_from_directory(FRONTEND_DIR / "static", filename)
+        return _no_cache(send_from_directory(FRONTEND_DIR / "static", filename))
 
     @app.get("/healthz")
     def healthz():
