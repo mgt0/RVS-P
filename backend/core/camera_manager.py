@@ -28,6 +28,26 @@ from ..utils.errors import CameraUnavailableError, UnknownCameraError
 
 logger = logging.getLogger(__name__)
 
+# 열려 있는 DirectShow 인덱스 대장. USB 브라운아웃 후 재열거가 출렁이는 동안
+# 워커들이 서로 다른 시점에 '몇 번째 Arducam' 을 해석하면 같은 인덱스에 두 워커가
+# 도달할 수 있다(실측: 프리뷰 5칸에 실물 2대가 겹쳐 표시). 점유를 전역으로 기록해
+# 이미 잡힌 장치는 두 번째 워커가 건너뛰고 재시도하게 한다.
+_claimed_lock = threading.Lock()
+_claimed_indexes: set[int] = set()
+
+
+def _claim_index(index: int) -> bool:
+    with _claimed_lock:
+        if index in _claimed_indexes:
+            return False
+        _claimed_indexes.add(index)
+        return True
+
+
+def _release_index(index: int) -> None:
+    with _claimed_lock:
+        _claimed_indexes.discard(index)
+
 
 def init_com() -> None:
     """스레드마다 한 번 COM 을 초기화한다.
@@ -99,6 +119,11 @@ class _CameraWorker(threading.Thread):
     # 3초는 일시적 지연을 오진하지 않으면서 영구 정지는 확실히 잡는 값.
     STALL_SEC = 3.0
 
+    # 자동 WB 가 수렴하도록 기다리는 프레임 수. 15fps 기준 약 4초.
+    # 실측(Arducam, 흰 벽): 10프레임에서는 아직 초록이 남고 60프레임이면 중립
+    # (B227/G230/R227). 30 은 부족했다. 그 뒤에 잠가야 초록 캐스트 없이 고정된다.
+    WB_SETTLE_FRAMES = 60
+
     # 링버퍼 길이. 공통 기준시각에서 최대 ±(N/2 / fps) 초까지 되짚을 수 있다.
     # 8프레임 @30fps ≈ ±133ms 로, 카메라 간 위상차를 흡수하기에 충분하다.
     BUFFER_SIZE = 8
@@ -117,6 +142,9 @@ class _CameraWorker(threading.Thread):
         self._last_ts = 0.0
         self._error: str | None = None
         self._truncated_count = 0   # 대역폭 부족으로 버린 프레임 수(진단용)
+        self._wb_locked = True      # _open() 에서 설정에 따라 다시 정한다
+        self._wb_lock_at = 0
+        self._claimed: int | None = None   # 점유 중인 dshow 인덱스
 
     # ---------- 라이프사이클 ----------
     def _open(self) -> bool:
@@ -146,6 +174,13 @@ class _CameraWorker(threading.Thread):
                     f"연결된 장치: {', '.join(list_device_names()) or '없음'}"
                 )
                 return False
+            if not _claim_index(index):
+                self._error = (
+                    f"dshow {index} 는 다른 카메라 슬롯이 사용 중입니다. "
+                    "장치 재열거가 끝나면 자동으로 풀립니다."
+                )
+                return False
+            self._claimed = index
             cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
             target = f"{self.cfg.match_name}#{self.cfg.nth} (dshow {index})"
         else:
@@ -155,6 +190,7 @@ class _CameraWorker(threading.Thread):
         if not cap.isOpened():
             self._error = f"{target} open 실패"
             cap.release()
+            self._release_claim()
             return False
 
         # FOURCC 는 반드시 '맨 마지막'에 설정한다. 해상도나 FPS 를 FOURCC 뒤에 쓰면
@@ -176,18 +212,35 @@ class _CameraWorker(threading.Thread):
             # 자동 노출을 먼저 끄지 않으면 수동 값이 곧바로 덮어써진다.
             cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)   # 0.25 = manual (MSMF/DSHOW 공통)
             cap.set(cv2.CAP_PROP_EXPOSURE, self.cfg.exposure)
+            # 게인은 노출로 번 밝기를 노이즈째로 증폭한다. 수동 노출을 쓸 때는
+            # 0 으로 두고 밝기는 brightness 로만 맞춘다.
+            cap.set(cv2.CAP_PROP_GAIN, 0)
+        else:
+            # 자동 노출을 '명시적으로 다시 켠다'. UVC 카메라는 설정을 드라이버에
+            # 저장하므로, 과거 노출 튜닝 실험이 남긴 수동 노출 값이 계속 살아남는다 —
+            # 실측: Arducam 5대 전부 완전 검은 화면(mean 0.0)이었고, 자동 노출을
+            # 켜자마자 정상 복귀했다. (자동 WB 재활성화와 같은 원리)
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
 
-        if self.cfg.lock_white_balance:
-            # 자동 화이트밸런스를 끈다.
-            #
-            # 배경 차분은 '배경을 찍을 때와 물체를 찍을 때의 카메라가 같다'는 전제로
-            # 동작한다. 자동 WB 는 화면에 물체가 들어오면 색온도를 다시 잡으므로
-            # 그 전제가 깨지고, 배경과 촬영본의 색조가 통째로 달라져 화면 전체가
-            # '배경과 다른 곳'이 된다(실측: 그래서 실루엣이 54~80% 로 번졌다).
-            # 노출 고정만으로는 부족하고 WB 도 같이 잠가야 배경 참조가 오래간다.
+        if self.cfg.brightness is not None:
+            cap.set(cv2.CAP_PROP_BRIGHTNESS, self.cfg.brightness)
+
+        if self.cfg.lock_white_balance and self.cfg.white_balance is not None:
+            # 색온도를 명시했으면 처음부터 그 값으로 고정한다.
             cap.set(cv2.CAP_PROP_AUTO_WB, 0)
-            if self.cfg.white_balance is not None:
-                cap.set(cv2.CAP_PROP_WB_TEMPERATURE, self.cfg.white_balance)
+            cap.set(cv2.CAP_PROP_WB_TEMPERATURE, self.cfg.white_balance)
+        else:
+            # 자동 WB 를 '명시적으로 다시 켠다'. UVC 카메라는 설정을 드라이버에
+            # 저장하므로, 지난 세션에서 꺼둔 자동 WB 가 다음 실행까지 남는다 —
+            # 코드에서 안 끄는 것만으로는 부족하다(실측: 재시작해도 초록 유지).
+            cap.set(cv2.CAP_PROP_AUTO_WB, 1)
+        # 색온도 미지정이면 여기서 자동 WB 를 끄지 '않는다'. 열자마자 끄면 센서가
+        # 수렴할 기회가 없어 기본 보정값(초록 캐스트)에 박제된다 — 실측: 화면 전체가
+        # 초록으로 나왔다. 대신 몇 프레임 돌려 수렴시킨 뒤 캡처 루프에서 잠근다.
+        self._wb_locked = not self.cfg.lock_white_balance or self.cfg.white_balance is not None
+        # 재연결 때도 '이번 open 기준' 프레임 수로 수렴을 기다린다. _frame_index 는
+        # 세션 누적값이라 그대로 비교하면 재연결 직후 수렴 전에 잠가버린다.
+        self._wb_lock_at = self._frame_index + self.WB_SETTLE_FRAMES
 
         self._cap = cap
         self._error = None
@@ -225,6 +278,14 @@ class _CameraWorker(threading.Thread):
 
             now = time.monotonic()
             self._publish(image, now)
+
+            # 자동 WB 가 수렴한 뒤 잠근다(열자마자 끄면 초록 캐스트에 박제된다).
+            # 재연결 때도 같은 경로로 다시 수렴→잠금 된다.
+            if not self._wb_locked and self._frame_index >= self._wb_lock_at:
+                if self._cap is not None:
+                    self._cap.set(cv2.CAP_PROP_AUTO_WB, 0)
+                self._wb_locked = True
+                logger.info("카메라 %s 화이트밸런스 수렴 완료 — 잠금", self.cfg.name)
 
             # 다음 '공통 격자 시각'까지 쉰다. 페이싱이 없으면 read() 가 즉시 같은
             # 프레임을 돌려주는 드라이버(측정: MSMF + Arducam 다중 연결)에서 루프가
@@ -295,10 +356,16 @@ class _CameraWorker(threading.Thread):
             self._last_ts = ts
             self._new_frame.notify_all()
 
+    def _release_claim(self) -> None:
+        if self._claimed is not None:
+            _release_index(self._claimed)
+            self._claimed = None
+
     def _release(self) -> None:
         if self._cap is not None:
             self._cap.release()
             self._cap = None
+        self._release_claim()
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -320,6 +387,7 @@ class _CameraWorker(threading.Thread):
         self._last_ts = 0.0     # 재오픈 직후 다시 stalled 로 오진되지 않게 초기화
         if cap is not None:
             cap.release()
+        self._release_claim()
 
     # ---------- 조회 ----------
     def latest(self) -> Frame | None:
@@ -373,6 +441,8 @@ class _CameraWorker(threading.Thread):
     def status(self) -> dict:
         return {
             "name": self.cfg.name,
+            # 화면 표시용 이름. 슬롯 키는 데이터 경로라 그대로 두고 label 만 보여준다.
+            "label": self.cfg.label or self.cfg.name,
             "device": f"{self.cfg.match_name}#{self.cfg.nth}" if self.cfg.match_name
                       else str(self.cfg.device),
             "resolution": self.cfg.resolution,

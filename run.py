@@ -6,11 +6,17 @@ threaded=True 로 띄우되, 실제 데모/수집에는 scripts/serve.sh 의
 gunicorn+gevent 구성을 사용하세요.
 """
 
+import atexit
 import socket
 import sys
+import tempfile
+from pathlib import Path
 
 from backend.app import create_app
 from backend.config import load_config
+
+_LOCK_PATH = Path(tempfile.gettempdir()) / "omx-scan-dashboard.lock"
+_lock_handle = None
 
 
 def _abort_if_already_running(port: int) -> None:
@@ -37,10 +43,61 @@ def _abort_if_already_running(port: int) -> None:
     )
 
 
+def _acquire_single_instance_lock() -> None:
+    """하드웨어를 열기 전에 배타 잠금을 잡는다.
+
+    _abort_if_already_running() 만으로는 부족하다. 두 인스턴스가 거의 동시에
+    출발하면 둘 다 '아무도 안 듣고 있다'를 보고 통과한 뒤, 카메라를 서로
+    뺏는다(실측: 5대가 전부 open 실패, 증상은 '캠이 안 나온다'). 포트 바인딩은
+    카메라를 다 연 뒤에야 일어나므로 그 사이가 통째로 경합 구간이다.
+
+    파일 잠금은 프로세스가 죽으면 OS 가 알아서 풀어주므로, 강제 종료된
+    인스턴스가 잠금을 들고 죽는 일이 없다.
+    """
+    global _lock_handle
+    import msvcrt  # Windows 전용. 이 리그는 Windows 다.
+
+    _lock_handle = open(_LOCK_PATH, "a+")  # noqa: SIM115 — 프로세스 수명 동안 열어둔다
+    try:
+        msvcrt.locking(_lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        # 잠금 실패뿐 아니라, 잠긴 파일에 대한 쓰기 거부(PermissionError)도 여기로 온다.
+        sys.exit(
+            "이미 다른 대시보드가 실행 중입니다.\n"
+            "두 개를 동시에 띄우면 카메라와 시리얼 포트를 서로 뺏어 둘 다 오동작합니다.\n"
+            "기존 창을 닫거나 종료한 뒤 다시 실행하세요."
+        )
+    atexit.register(_lock_handle.close)
+
+
+def _serve_streams(app, cfg) -> None:
+    """MJPEG 프리뷰를 두 번째 포트에서도 서빙한다(같은 app, 다른 포트).
+
+    브라우저는 오리진당 동시 연결을 6개로 묶는다. 카메라 6대의 MJPEG 은 연결을
+    하나씩 영구히 물고 있어서, 한 포트로 다 받으면 그 6개를 스트림이 전부 차지하고
+    API 요청이 큐에서 무한 대기한다 — 화면상으로는 '버튼을 눌러도 아무 반응이 없고
+    잠긴 채로 굳는' 증상이다(실측). 포트가 다르면 오리진이 달라 연결 예산이 따로 잡힌다.
+    """
+    import threading
+
+    if not cfg.server.stream_port or cfg.server.stream_port == cfg.server.port:
+        return
+    threading.Thread(
+        target=lambda: app.run(
+            host=cfg.server.host, port=cfg.server.stream_port,
+            debug=False, threaded=True, use_reloader=False,
+        ),
+        daemon=True,   # 메인 서버가 내려가면 같이 죽는다
+        name="stream-server",
+    ).start()
+
+
 def main() -> None:
     cfg = load_config()
+    _acquire_single_instance_lock()
     _abort_if_already_running(cfg.server.port)
     app = create_app(cfg)
+    _serve_streams(app, cfg)
     app.run(
         host=cfg.server.host,
         port=cfg.server.port,

@@ -1,3 +1,6 @@
+// [레거시] ESP32-S3 (LOLIN S3) 판. 현재 리그는 STM32F411 BlackPill 을 쓴다 —
+// firmware/conveyor_blackpill/ 참조. 프로토콜은 동일하며 이 파일은 참고용으로 남긴다.
+//
 // ESP32-S3 (LOLIN S3) + TB6600 + NEMA17(1.8도): 컨베이어 UART 제어
 //
 // 배선 (공통 GND 방식)
@@ -34,8 +37,8 @@ const int ENA_PIN = 4;
 // MICROSTEP 은 TB6600 DIP 스위치(S1~S3) 설정과 반드시 일치시켜야 한다.
 // 값이 틀리면 RPM 명령과 실제 회전수가 그 비율만큼 어긋난다.
 const float MOTOR_STEPS_PER_REV = 200.0;
-const float MICROSTEP           = 8;
-const float STEPS_PER_REV       = MOTOR_STEPS_PER_REV * MICROSTEP;  // 1회전 펄스 수
+const float MICROSTEP = 8;
+const float STEPS_PER_REV = MOTOR_STEPS_PER_REV * MICROSTEP;  // 1회전 펄스 수
 
 // ── 속도 ──────────────────────────────────────────────────────────────
 // 800sps 는 풀스텝 기준 240RPM 으로, 부하가 걸린 NEMA17 이 탈조하기 쉬운 속도다.
@@ -57,7 +60,7 @@ const float RAMP_SPS_PER_SEC = 100000.0;  // 가속도. 8000sps 까지 약 0.08�
 // 램프 중 LEDC 주파수를 갱신하는 주기. 매 루프 갱신하면 호출 비용만 커진다.
 const unsigned long RAMP_UPDATE_US = 2000;
 
-float targetSps = 8000.0;                 // 목표 속도. 실행 중 변경 가능
+float targetSps = 8000.0;  // 목표 속도. 실행 중 변경 가능
 
 // TB6600 은 방향 신호가 바뀐 뒤 최소 5us 뒤에 펄스가 와야 한다.
 // 벨트 부하가 걸린 상태에서 즉시 반전시키면 탈조하므로 넉넉히 멈춘 뒤 재출발한다.
@@ -86,9 +89,12 @@ void applyEnable() {
 
 void beginRun() {
   running = true;
-  currentSps = START_SPS;      // 매번 저속에서 다시 출발
+  currentSps = START_SPS;  // 매번 저속에서 다시 출발
   lastRampUs = micros();
-  if (!enabled) { enabled = true; applyEnable(); }
+  if (!enabled) {
+    enabled = true;
+    applyEnable();
+  }
   setPulseHz(currentSps);
 }
 
@@ -97,8 +103,12 @@ void endRun() {
   setPulseHz(0);
 }
 
-float spsToRpm(float sps) { return sps * 60.0 / STEPS_PER_REV; }
-float rpmToSps(float rpm) { return rpm * STEPS_PER_REV / 60.0; }
+float spsToRpm(float sps) {
+  return sps * 60.0 / STEPS_PER_REV;
+}
+float rpmToSps(float rpm) {
+  return rpm * STEPS_PER_REV / 60.0;
+}
 
 bool setTargetSps(float sps) {
   if (sps < MIN_SPS || sps > MAX_SPS) return false;
@@ -108,15 +118,24 @@ bool setTargetSps(float sps) {
 
 void printStatus() {
   // JSON 한 줄. 키를 늘릴 때 호스트의 status() 파서도 같이 본다.
-  Serial.print("{\"running\":");   Serial.print(running ? "true" : "false");
-  Serial.print(",\"enabled\":");   Serial.print(enabled ? "true" : "false");
-  Serial.print(",\"dir\":\"");     Serial.print(dirCw ? "cw" : "ccw");
-  Serial.print("\",\"sps\":");     Serial.print(running ? currentSps : 0.0, 1);
-  Serial.print(",\"target_sps\":");Serial.print(targetSps, 1);
-  Serial.print(",\"rpm\":");       Serial.print(spsToRpm(running ? currentSps : 0.0), 2);
-  Serial.print(",\"target_rpm\":");Serial.print(spsToRpm(targetSps), 2);
-  Serial.print(",\"microstep\":"); Serial.print((int)MICROSTEP);
-  Serial.print(",\"steps_per_rev\":"); Serial.print((int)STEPS_PER_REV);
+  Serial.print("{\"running\":");
+  Serial.print(running ? "true" : "false");
+  Serial.print(",\"enabled\":");
+  Serial.print(enabled ? "true" : "false");
+  Serial.print(",\"dir\":\"");
+  Serial.print(dirCw ? "cw" : "ccw");
+  Serial.print("\",\"sps\":");
+  Serial.print(running ? currentSps : 0.0, 1);
+  Serial.print(",\"target_sps\":");
+  Serial.print(targetSps, 1);
+  Serial.print(",\"rpm\":");
+  Serial.print(spsToRpm(running ? currentSps : 0.0), 2);
+  Serial.print(",\"target_rpm\":");
+  Serial.print(spsToRpm(targetSps), 2);
+  Serial.print(",\"microstep\":");
+  Serial.print((int)MICROSTEP);
+  Serial.print(",\"steps_per_rev\":");
+  Serial.print((int)STEPS_PER_REV);
   Serial.println("}");
 }
 
@@ -133,20 +152,26 @@ void handleCommand(const String& cmd) {
     // 실행 중 속도 튜닝. 탈조하면 낮추고, 너무 느리면 올린다.
     float v = cmd.substring(6).toFloat();
     if (setTargetSps(v)) {
-      Serial.print("OK: TARGET_SPS="); Serial.println(targetSps, 1);
+      Serial.print("OK: TARGET_SPS=");
+      Serial.println(targetSps, 1);
     } else {
-      Serial.print("ERR: SPEED 범위는 "); Serial.print(MIN_SPS, 0);
-      Serial.print("~"); Serial.println(MAX_SPS, 0);
+      Serial.print("ERR: SPEED 범위는 ");
+      Serial.print(MIN_SPS, 0);
+      Serial.print("~");
+      Serial.println(MAX_SPS, 0);
     }
 
   } else if (cmd.startsWith("RPM ")) {
     // 사람이 감으로 잡기 쉬운 단위. 1.8도 + MICROSTEP 로 sps 로 환산한다.
     float rpm = cmd.substring(4).toFloat();
     if (setTargetSps(rpmToSps(rpm))) {
-      Serial.print("OK: TARGET_RPM="); Serial.println(spsToRpm(targetSps), 2);
+      Serial.print("OK: TARGET_RPM=");
+      Serial.println(spsToRpm(targetSps), 2);
     } else {
-      Serial.print("ERR: RPM 범위는 "); Serial.print(spsToRpm(MIN_SPS), 2);
-      Serial.print("~"); Serial.println(spsToRpm(MAX_SPS), 2);
+      Serial.print("ERR: RPM 범위는 ");
+      Serial.print(spsToRpm(MIN_SPS), 2);
+      Serial.print("~");
+      Serial.println(spsToRpm(MAX_SPS), 2);
     }
 
   } else if (cmd.startsWith("DIR ")) {
@@ -154,31 +179,37 @@ void handleCommand(const String& cmd) {
     arg.trim();
     arg.toUpperCase();
     bool wantCw;
-    if (arg == "CW" || arg == "1")       wantCw = true;
+    if (arg == "CW" || arg == "1") wantCw = true;
     else if (arg == "CCW" || arg == "0") wantCw = false;
-    else { Serial.println("ERR: DIR 인자는 CW 또는 CCW"); return; }
+    else {
+      Serial.println("ERR: DIR 인자는 CW 또는 CCW");
+      return;
+    }
 
     if (wantCw != dirCw) {
       bool wasRunning = running;
-      if (wasRunning) endRun();   // 부하 걸린 상태에서 즉시 반전 = 탈조
+      if (wasRunning) endRun();  // 부하 걸린 상태에서 즉시 반전 = 탈조
       dirCw = wantCw;
       applyDir();
       if (wasRunning) {
-        delay(DIR_SETTLE_MS);     // 벨트가 멎을 시간
-        beginRun();               // 저속에서 다시 가속
+        delay(DIR_SETTLE_MS);  // 벨트가 멎을 시간
+        beginRun();            // 저속에서 다시 가속
       }
     }
-    Serial.print("OK: DIR="); Serial.println(dirCw ? "CW" : "CCW");
+    Serial.print("OK: DIR=");
+    Serial.println(dirCw ? "CW" : "CCW");
 
   } else if (cmd == "ENABLE") {
-    enabled = true; applyEnable();
+    enabled = true;
+    applyEnable();
     Serial.println("OK: ENABLED");
 
   } else if (cmd == "DISABLE") {
     // 드라이버를 놓으면 홀딩 토크가 사라져 축을 손으로 돌릴 수 있다.
     // 벨트를 수동으로 옮기거나 열을 식힐 때 쓴다.
     endRun();
-    enabled = false; applyEnable();
+    enabled = false;
+    applyEnable();
     Serial.println("OK: DISABLED");
 
   } else if (cmd == "STATUS") {
@@ -201,7 +232,7 @@ void setup() {
   ledcAttach(PUL_PIN, 1000, 8);
   setPulseHz(0);
   applyDir();
-  applyEnable();   // 활성화 (홀딩 토크 유지)
+  applyEnable();  // 활성화 (홀딩 토크 유지)
 
   lineBuf.reserve(32);
   Serial.begin(115200);
@@ -226,7 +257,7 @@ void loop() {
   if (!running) return;
 
   unsigned long now = micros();
-  if (now - lastRampUs < RAMP_UPDATE_US) return;   // 2ms 마다만 갱신
+  if (now - lastRampUs < RAMP_UPDATE_US) return;  // 2ms 마다만 갱신
 
   // 가속: 목표 속도까지 서서히 올린다.
   if (currentSps < targetSps) {

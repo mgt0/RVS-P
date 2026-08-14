@@ -14,8 +14,14 @@ import pytest
 os.environ["OMX_SIMULATE"] = "1"
 
 from backend.app import create_app  # noqa: E402
-from backend.config import SafetyConfig, load_config  # noqa: E402
-from backend.core.arm_controller import SafetyGuard, deg_to_ticks, ticks_to_deg  # noqa: E402
+from backend.config import ArmConfig, SafetyConfig, load_config  # noqa: E402
+from backend.core.arm_controller import (  # noqa: E402
+    ArmController,
+    SafetyGuard,
+    deg_to_ticks,
+    s32,
+    ticks_to_deg,
+)
 from backend.core.storage import validate_id  # noqa: E402
 from backend.utils.errors import ValidationError  # noqa: E402
 
@@ -46,6 +52,62 @@ class TestSafetyGuard:
         out, touched = guard.clamp([0.0, 130.0], [0.0, 119.0])
         assert out[1] <= 120.0
         assert touched is True
+
+
+# --------------------------------------------------------------- 좌표계 정렬
+class _FakeBackend:
+    """정해진 raw 각도를 돌려주고 마지막 쓰기를 기록하는 대역."""
+
+    def __init__(self, positions):
+        self.positions = list(positions)
+        self.written = None
+
+    def connect(self): ...
+    def disconnect(self): ...
+
+    def read_positions(self):
+        return list(self.positions)
+
+    def write_positions(self, degrees):
+        self.written = list(degrees)
+        self.positions = list(degrees)
+
+    def set_torque(self, enabled): ...
+
+
+class TestArmAlignment:
+    """실기의 팔로워는 extended position mode 멀티턴 누적으로 리더와
+    절대각이 어긋난다(실측: 리더 6.7° 자세에서 팔로워 raw 187.6°).
+    align_to 로 리더 좌표계에 정렬한 뒤에는 읽기/쓰기가 모두 논리각이어야 한다."""
+
+    def _arm(self, raw):
+        cfg = ArmConfig(role="follower", joint_ids=(11,), home_position=(0.0,))
+        backend = _FakeBackend(raw)
+        arm = ArmController(cfg, backend, SafetyGuard(SafetyConfig()))
+        arm.connect()
+        return arm, backend
+
+    def test_align_후_읽기는_리더_좌표계_각도를_반환한다(self):
+        arm, _ = self._arm([187.6])
+        arm.align_to([6.7])
+        assert arm.read()[0] == pytest.approx(6.7)
+
+    def test_align_후_쓰기는_raw_좌표계로_변환되어_나간다(self):
+        arm, backend = self._arm([187.6])
+        arm.align_to([6.7])
+        arm.write([8.0])
+        # 논리 8.0° = raw 8.0 + (187.6 - 6.7)
+        assert backend.written[0] == pytest.approx(188.9)
+
+    def test_align_전에는_offset_이_없다(self):
+        arm, backend = self._arm([50.0])
+        assert arm.read()[0] == pytest.approx(50.0)
+
+
+def test_unsigned32_음수_변환():
+    # extended position mode 에서 0 아래로 내려간 모터는 unsigned 로 큰 값을 반환한다
+    assert s32(4294967246) == -50
+    assert s32(2124) == 2124
 
 
 # --------------------------------------------------------------- 단위 변환

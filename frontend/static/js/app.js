@@ -110,6 +110,8 @@ createApp({
       sample_rate_hz: 30,
       max_relative_target: 5,
       simulate: false,
+      // 0 이면 프리뷰도 같은 포트에서 받는다(스트림 분리 없음)
+      stream_port: 0,
     });
 
     /* 컨베이어 벨트 목록(공급 벨트 + 로봇 작업 벨트).
@@ -263,10 +265,21 @@ createApp({
        첫 렌더에서 streamUrl 이 undefined 로 굳고 <img> 에 src 가 아예 안 붙었다
        (증상: Network 탭에 /api/stream 요청이 0건, 프리뷰가 빈 화면).
        매 렌더 같은 문자열이 나오므로 Vue 가 src 를 다시 쓰지 않아 재연결도 없다. */
+    /* 프리뷰만 다른 포트에서 받는다. 브라우저는 오리진당 동시 연결이 6개인데
+       MJPEG 은 연결을 하나씩 영구히 물고 있어서, 카메라 6대면 그 예산을 전부
+       써버려 API 요청이 큐에서 무한 대기한다 — 버튼을 눌러도 요청이 나가지 않고
+       화면이 잠긴 채 굳는다(실측). 포트가 다르면 연결 예산도 따로 잡힌다.
+       meta 는 onMounted 의 첫 단계라 status.cameras 보다 항상 먼저 채워진다. */
+    const streamBase = computed(() =>
+      meta.stream_port && String(meta.stream_port) !== location.port
+        ? `${location.protocol}//${location.hostname}:${meta.stream_port}`
+        : ''
+    );
+
     const cameraViews = computed(() =>
       status.cameras.map((cam) => ({
         ...cam,
-        streamUrl: `/api/stream/${cam.name}?fps=12&q=70`,
+        streamUrl: `${streamBase.value}/api/stream/${cam.name}?fps=12&q=70`,
       }))
     );
 
@@ -291,6 +304,7 @@ createApp({
           defect_types: data.defect_types,
           sample_rate_hz: data.sample_rate_hz,
           max_relative_target: data.max_relative_target,
+          stream_port: data.stream_port ?? 0,
         });
         // 다음 에피소드 ID 를 미리 채워 오타와 중복을 줄인다.
         if (!form.episodeId) form.episodeId = data.next_episode_id;
@@ -379,11 +393,19 @@ createApp({
       }
     }
 
+    /* 소프트 리밋 축이 지금 방향으로 더 갈 수 있는가. 갈 수 없으면 펌웨어가
+       START 를 거부하므로, 눌러보고 실패하는 대신 버튼을 미리 잠그고 이유를 보여준다. */
+    function beltAtLimit(belt) {
+      if (!belt.limit_rev || belt.pos_rev === undefined) return false;
+      return belt.dir === 'ccw' ? belt.pos_rev <= 0 : belt.pos_rev >= belt.limit_rev;
+    }
+
     function beltStatusLabel(belt) {
       if (!belt.connected) return 'PORT CLOSED';
       if (!belt.enabled) return 'DISABLED';
-      if (!belt.running) return 'IDLE';
-      return `${Number(belt.rpm || 0).toFixed(1)} RPM`;
+      if (belt.running) return `${Number(belt.rpm || 0).toFixed(1)} RPM`;
+      if (beltAtLimit(belt)) return belt.dir === 'ccw' ? '원점 · 끝' : '리밋 · 끝';
+      return 'IDLE';
     }
 
     /* 서버의 전 벨트 스냅샷을 병합한다. 사용자가 입력 중인 rpmInput 은
@@ -391,28 +413,48 @@ createApp({
     function applyConveyors(list) {
       if (!Array.isArray(list)) return;
       const prev = Object.fromEntries(conveyors.value.map((b) => [b.name, b]));
-      conveyors.value = list.map((b) => ({
-        rpmInput: prev[b.name]?.rpmInput
-          ?? (b.target_rpm ? Math.round(b.target_rpm * 100) / 100 : 2),
-        ...b,
-      }));
+      conveyors.value = list.map((b) => {
+        const belt = prev[b.name];
+        // 이미 있는 벨트는 '제자리'로 갱신한다. 새 객체로 갈아끼우면 진행 중인
+        // 명령이 들고 있던 참조가 화면에서 떨어져 나가, 완료 시점에 푸는
+        // belt.busy = false 가 버려진 객체에만 적용된다 — 버튼이 잠긴 채 굳는다.
+        if (belt) return Object.assign(belt, b);
+        return {
+          // rpmInput 은 사용자가 입력 중인 값이라 서버 응답에 없다(폴링이 못 덮어쓴다)
+          rpmInput: b.target_rpm ? Math.round(b.target_rpm * 100) / 100 : 2,
+          busy: false,
+          ...b,
+        };
+      });
     }
 
-    /* 명령 응답(벨트 하나의 평면 상태)을 해당 벨트에만 병합 */
+    /* 명령 응답(벨트 하나의 평면 상태)을 해당 벨트에 병합.
+
+       연결 여부만은 같은 포트를 쓰는 축에도 함께 반영한다. 포트는 보드 단위라
+       한 축이 열면 세 축이 다 열린 것인데, 명령 응답은 그 축의 상태만 담고 있어
+       다음 폴링(5초)까지 나머지 카드가 'PORT CLOSED' 로 남아 보였다. */
     function applyBelt(data) {
       const belt = conveyors.value.find((b) => b.name === data.name);
       if (belt) Object.assign(belt, data);
+      if (data.port && data.connected !== undefined) {
+        conveyors.value.forEach((b) => {
+          if (b !== belt && b.port === data.port) b.connected = data.connected;
+        });
+      }
     }
 
+    /* 잠금은 벨트별이다. 전역 플래그를 쓰면 한 벨트를 조작하는 동안 나머지 축의
+       버튼까지 전부 잠겨(정지 버튼 포함) '전부 멈춘 것처럼' 보인다 — 축이 3개가
+       되면서 실제로 그렇게 보였다. 축끼리는 서로 독립이어야 한다. */
     async function beltCall(belt, fn, message) {
-      busy.conveyor = true;
+      belt.busy = true;
       try {
         applyBelt(await fn());
         if (message) notify(`${belt.label || belt.name} — ${message}`);
       } catch (err) {
         notify(`${belt.label || belt.name}: ${err.message}`, 'error');
       } finally {
-        busy.conveyor = false;
+        belt.busy = false;
       }
     }
 
@@ -441,6 +483,26 @@ createApp({
       await beltCall(belt,
         () => api.post(`/api/conveyor/${belt.name}/dir`, { direction: next }),
         next === 'cw' ? '정방향 전환' : '역방향 전환');
+    }
+
+    /* 분류 게이트 서보. 실기 가동 범위는 15°(열림) ~ 130°(닫힘) — 기구에 막혀
+       0°/90° 로는 원하는 자세가 안 나온다. 두 자세만 쓰므로 버튼 두 개다.
+       서보는 보드에 하나뿐이라 이 버튼은 servo_deg 를 싣고 오는 축에만 붙는다. */
+    const GATE_OPEN_DEG = 15;
+    const GATE_CLOSE_DEG = 130;
+
+    async function setGate(belt, deg) {
+      await beltCall(belt,
+        () => api.post(`/api/conveyor/${belt.name}/servo`, { deg }),
+        deg === GATE_OPEN_DEG ? '게이트 열림' : '게이트 닫힘');
+    }
+
+    /* LM 가이드 원점. 리밋 스위치가 없으므로 사람이 축을 한쪽 끝에 두고 누른다.
+       여기가 0 이 되고, config 의 limit_rev 범위를 벗어나면 펌웨어가 스스로 멈춘다. */
+    async function setBeltZero(belt) {
+      await beltCall(belt,
+        () => api.post(`/api/conveyor/${belt.name}/zero`),
+        '현재 위치를 원점으로 설정');
     }
 
     async function releaseBelt(belt) {
@@ -569,7 +631,7 @@ createApp({
         applyPorts(await api.get('/api/ports'));
       } catch { /* 무시 */ }
       // 컨베이어 상태는 포트를 열지 않고 읽는다(release 한 포트를 폴링이 다시 잡으면
-      // ESP32 가 리셋돼 돌던 모터가 멈춘다). 서버 쪽에서 보장한다.
+      // 펌웨어 업로드(DFU)를 방해한다). 서버 쪽에서 보장한다.
       try {
         applyConveyors((await api.get('/api/conveyor/status')).conveyors);
       } catch { /* 무시 */ }
@@ -907,8 +969,9 @@ createApp({
       ports, status, meta, form, busy, toasts,
       recording, connectedCount, totalCount, allConnected, canStart, cameraViews, objectCounts,
       refreshPorts, testConnections, identify, toggleTeleop, goHome,
-      conveyors, beltStatusLabel, startBelt, stopBelt, setBeltSpeed,
-      toggleBeltDir, releaseBelt,
+      conveyors, beltStatusLabel, beltAtLimit, startBelt, stopBelt, setBeltSpeed,
+      toggleBeltDir, releaseBelt, setGate, setBeltZero,
+      GATE_OPEN_DEG, GATE_CLOSE_DEG,
       setLabel, startRecording, stopRecording, dismiss, fmtDeg,
       // 에피소드 관리
       episodes, refreshEpisodes, saveEpisode, deleteEpisode,

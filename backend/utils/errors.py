@@ -70,13 +70,6 @@ class UnknownCameraError(OmxError):
     code = "unknown_camera"
 
 
-class SafetyLimitError(OmxError):
-    """max_relative_target 초과 등 안전 제한 위반."""
-
-    status_code = 409
-    code = "safety_limit_exceeded"
-
-
 class RecordingStateError(OmxError):
     """IDLE 상태에서 stop, RECORDING 중 start 같은 잘못된 상태 전이."""
 
@@ -101,7 +94,7 @@ class EmptyHullError(OmxError):
 
 
 class ConveyorError(OmxError):
-    """ESP32 컨베이어 서버에 연결/응답 실패."""
+    """컨베이어 제어 보드에 연결/응답 실패."""
 
     status_code = 503
     code = "conveyor_unreachable"
