@@ -202,10 +202,12 @@
               원점 설정
             </button>
             <!-- 끝(상한)에 닿았을 때만 강조한다. 0 은 원점이라 정상 상태다 —
-                 여기까지 붉게 칠하면 원점을 잡을 때마다 경고가 뜬다. -->
+                 여기까지 붉게 칠하면 원점을 잡을 때마다 경고가 뜬다.
+                 회전수가 아니라 mm 로 보여준다. 사람이 기구를 mm 로 재기 때문이다. -->
             <span class="mono mono--xs"
                   :class="{ 'mono--sunset': belt.pos_rev >= belt.limit_rev }">
-              {{ Number(belt.pos_rev || 0).toFixed(2) }} / {{ Number(belt.limit_rev).toFixed(2) }} 회전
+              {{ Math.round(Number(belt.pos_rev || 0) * belt.mm_per_rev) }} /
+              {{ Math.round(belt.stroke_mm) }} mm
             </span>
           </div>
 
