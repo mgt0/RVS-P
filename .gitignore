@@ -25,3 +25,6 @@ lerobot_data/background/
 
 # 펌웨어 빌드 산출물 (arduino-cli --export-binaries). 소스만 버전관리한다.
 firmware/*/build/
+
+# 서버 로그 (logs/server.log). 내용은 런타임 기록이라 버전관리하지 않는다.
+logs/
