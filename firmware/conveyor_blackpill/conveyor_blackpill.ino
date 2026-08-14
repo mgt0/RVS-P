@@ -52,6 +52,7 @@
 //   M2 STATUS           해당 모터 상태를 JSON 한 줄로               -> {"running":true,...}
 //   M3 ZERO             현재 위치를 원점(0)으로                      -> OK: ZERO
 //   M3 LIMIT <rev>      가동 범위를 원점부터 <rev> 회전까지로 (0=해제) -> OK: LIMIT=12.00
+//   M3 GOTO <rev>       그 위치까지 가서 스스로 멈춘다(방향 자동)     -> OK: GOTO 8.000
 //   SERVO <deg>         분류 게이트 서보 각도 (0~180, 보드에 1개)    -> OK: SERVO=90
 //   PING                생존 확인                                   -> PONG
 //
@@ -135,14 +136,18 @@ struct Motor {
   // 소프트 펄스라 추정이 아니라 실제 카운트다. limitSteps 0 = 리밋 없음.
   long posSteps;
   long limitSteps;
+  // GOTO: 목표 위치까지 가서 스스로 멈춘다. seeking 이 false 면 무한 주행
+  // (컨베이어 벨트가 그렇다). 방향은 GOTO 가 현재 위치와 비교해 알아서 정한다.
+  bool seeking;
+  long seekTarget;
 };
 
 const int NUM_MOTORS = 3;
 Motor motors[NUM_MOTORS] = {
-  // pul, dir, ena
-  { PA0, PA1, PA2, false, true, true, START_SPS, 8000.0, 0, 0, 0, false, 0, 0 },  // M1 컨베이어 1
-  { PA3, PA6, PA7, false, true, true, START_SPS, 8000.0, 0, 0, 0, false, 0, 0 },  // M2 컨베이어 2
-  { PB0, PB1, PA8, false, true, true, START_SPS, 8000.0, 0, 0, 0, false, 0, 0 },  // M3 LM 가이드
+  // pul, dir, ena,                                        pos,lim, seeking,target
+  { PA0, PA1, PA2, false, true, true, START_SPS, 8000.0, 0, 0, 0, false, 0, 0, false, 0 },  // M1 컨베이어 1
+  { PA3, PA6, PA7, false, true, true, START_SPS, 8000.0, 0, 0, 0, false, 0, 0, false, 0 },  // M2 컨베이어 2
+  { PB0, PB1, PA8, false, true, true, START_SPS, 8000.0, 0, 0, 0, false, 0, 0, false, 0 },  // M3 LM 가이드
 };
 
 // 분류 게이트 서보(보드에 1개). PB3 을 Servo 라이브러리(전용 타이머 인터럽트)로 구동 —
@@ -201,6 +206,7 @@ void beginRun(Motor &m) {
 
 void endRun(Motor &m) {
   m.running = false;
+  m.seeking = false;    // 목표 주행 중이었다면 그것도 끝난다
   setPulseHz(m, 0);
 }
 
@@ -349,6 +355,29 @@ void handleCommand(int mi, const String& cmd) {
       Serial.print("OK: SERVO="); Serial.println(servoDeg);
     }
 
+  } else if (cmd.startsWith("GOTO ")) {
+    // 목표 위치(회전수)까지 가서 스스로 멈춘다. 방향은 현재 위치와 비교해 정한다.
+    // 리밋이 있으면 그 안으로 잘라낸다 — 범위 밖을 찍어도 끝에서 멎을 뿐이다.
+    long target = (long)(cmd.substring(5).toFloat() * STEPS_PER_REV);
+    if (m.limitSteps > 0) {
+      if (target < 0) target = 0;
+      if (target > m.limitSteps) target = m.limitSteps;
+    }
+    if (target == m.posSteps) {
+      Serial.println("OK: GOTO 이미 그 위치다");
+      return;
+    }
+    bool wantCw = target > m.posSteps;
+    if (wantCw != m.dirCw) {
+      if (m.running) { endRun(m); delay(DIR_SETTLE_MS); }   // 부하 상태 즉시 반전 = 탈조
+      m.dirCw = wantCw;
+      applyDir(m);
+    }
+    m.seekTarget = target;
+    beginRun(m);
+    m.seeking = true;    // beginRun 이 endRun 을 거칠 수 있으므로 그 뒤에 세운다
+    Serial.print("OK: GOTO "); Serial.println((float)target / STEPS_PER_REV, 3);
+
   } else if (cmd == "ZERO") {
     // 리밋 스위치가 없으니 원점은 사람이 잡는다: 축을 한쪽 끝에 두고 이 명령.
     m.posSteps = 0;
@@ -454,7 +483,12 @@ void loop() {
     if (!m.pulseHigh) {
       // 하강 엣지 = 한 스텝 완료. 추정이 아니라 실제로 보낸 펄스를 센다.
       m.posSteps += m.dirCw ? 1 : -1;
-      if (m.limitSteps > 0 && !canMove(m)) {
+      // GOTO 목표 도달 — 지나치지 않게 매 스텝 확인한다.
+      if (m.seeking &&
+          (m.dirCw ? m.posSteps >= m.seekTarget : m.posSteps <= m.seekTarget)) {
+        m.posSteps = m.seekTarget;
+        endRun(m);
+      } else if (m.limitSteps > 0 && !canMove(m)) {
         endRun(m);                                    // 소프트 리밋 끝
         if (m.posSteps < 0) m.posSteps = 0;
         if (m.posSteps > m.limitSteps) m.posSteps = m.limitSteps;

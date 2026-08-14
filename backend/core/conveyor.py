@@ -50,9 +50,20 @@ _port_locks: dict[str, threading.RLock] = {}
 
 
 class ConveyorController:
-    def __init__(self, cfg: ConveyorConfig, *, simulate: bool = False) -> None:
+    def __init__(
+        self,
+        cfg: ConveyorConfig,
+        *,
+        simulate: bool = False,
+        calibration=None,
+        name: str = "",
+    ) -> None:
         self._cfg = cfg
         self._simulate = simulate
+        # 사람이 직접 찍은 끝점을 담는다(없으면 config 의 stroke_mm 을 쓴다).
+        # name 은 그 저장소의 키 — API 경로 이름(feed/work/lm)과 같다.
+        self._cal = calibration
+        self._name = name or cfg.label or cfg.port
         # 중첩 획득이 있다(_command → _refresh → _command). RLock 이어야 한다.
         # 같은 포트의 다른 모터 컨트롤러와도 한 락을 나눠 쓴다(한 선로 = 한 락).
         self._lock = (
@@ -216,13 +227,30 @@ class ConveyorController:
                 logger.warning("STATUS 응답을 파싱할 수 없습니다: %s", reply)
         return self.state
 
+    # ------------------------------------------------------- 가동 범위(캘리브레이션)
+    @property
+    def stroke_mm(self) -> float:
+        """가동 거리(mm). 사람이 찍은 끝점이 있으면 그게 config 기본값을 이긴다."""
+        if self._cal is not None:
+            saved = self._cal.get(self._name, "stroke_mm")
+            if saved:
+                return float(saved)
+        return self._cfg.stroke_mm
+
+    @property
+    def limit_rev(self) -> float:
+        """펌웨어에 보낼 단위(회전). mm_per_rev 가 없으면 리밋을 걸지 않는다."""
+        if not (self.stroke_mm and self._cfg.mm_per_rev):
+            return 0.0
+        return self.stroke_mm / self._cfg.mm_per_rev
+
     # ------------------------------------------------------------------ 명령
     def start(self) -> dict:
         # 소프트 리밋은 보드가 재부팅되면 사라진다(전원/DFU). 매번 같이 보내면
         # '언제 연결이 새로 열렸는지' 를 따로 추적하지 않아도 항상 적용돼 있다.
         # START 는 빈번한 명령이 아니라 왕복 한 번이 더 붙는 비용은 무시할 만하다.
-        if self._cfg.limit_rev:
-            self._command(f"LIMIT {self._cfg.limit_rev:.3f}")
+        if self.limit_rev:
+            self._command(f"LIMIT {self.limit_rev:.3f}")
         self._command("START")
         self._state["running"] = True
         return self._refresh()
@@ -233,9 +261,50 @@ class ConveyorController:
         # 가동 범위는 원점부터 +방향(cw)으로 limit_rev 까지다. 방향이 ccw 인 채로
         # 원점을 잡으면 곧바로 하한에 막혀 START 가 거부된다 — 눌러도 아무 일이
         # 없는 것처럼 보이는 함정이라 여기서 진행 방향을 함께 맞춰준다.
-        if self._cfg.limit_rev:
+        if self.limit_rev:
             self._command("DIR CW")
             self._state["dir"] = "cw"
+        return self._refresh()
+
+    def set_end(self) -> dict:
+        """지금 서 있는 자리를 가동 범위의 끝으로 삼는다.
+
+        원점을 잡고 반대쪽 끝까지 몰고 온 뒤 부른다. 기구의 실제 길이를 자로 재서
+        config 에 옮겨 적는 대신 축을 직접 움직여 정하는 방식이라, 값이 실물과
+        어긋날 일이 없다. 끝점은 기구 제원이므로 파일에 저장해 전원을 껐다 켜도
+        남는다(원점은 리밋 스위치가 없어 매번 다시 잡아야 하는 것과 다르다).
+        """
+        if not self._cfg.mm_per_rev:
+            raise ValidationError(
+                f"'{self._name}' 은 mm_per_rev 가 없어 끝점을 정할 수 없습니다. "
+                "config.yaml 에 1회전당 이송(mm)을 먼저 적으세요."
+            )
+        pos_rev = float(self._refresh().get("pos_rev") or 0.0)
+        stroke = abs(pos_rev) * self._cfg.mm_per_rev
+        if stroke <= 0:
+            raise ValidationError(
+                "원점에서 움직이지 않았습니다. 축을 반대쪽 끝까지 옮긴 뒤 누르세요."
+            )
+        if self._cal is not None:
+            self._cal.set(self._name, "stroke_mm", round(stroke, 1))
+        logger.info("'%s' 끝점 설정: %.1fmm (%.3f rev)", self._name, stroke, pos_rev)
+        self._command(f"LIMIT {self.limit_rev:.3f}")
+        return self._refresh()
+
+    def move_to_mm(self, mm: float) -> dict:
+        """그 위치(mm)까지 이동하고 스스로 멈춘다. 방향은 펌웨어가 정한다."""
+        if not self._cfg.mm_per_rev:
+            raise ValidationError(f"'{self._name}' 은 mm_per_rev 가 없어 위치 이동을 쓸 수 없습니다.")
+        try:
+            target = float(mm)
+        except (TypeError, ValueError):
+            raise ValidationError(f"위치는 숫자여야 합니다: {mm!r}") from None
+        stroke = self.stroke_mm
+        if stroke and not 0.0 <= target <= stroke:
+            raise ValidationError(f"위치는 0~{stroke:.0f}mm 여야 합니다: {target}")
+        if self.limit_rev:
+            self._command(f"LIMIT {self.limit_rev:.3f}")
+        self._command(f"GOTO {target / self._cfg.mm_per_rev:.4f}")
         return self._refresh()
 
     def stop(self) -> dict:
@@ -291,11 +360,11 @@ class ConveyorController:
             # 설정값을 항상 실어 보낸다. 펌웨어 STATUS 의 실제 적용값이 오면 아래
             # _state 가 덮어쓴다 — 연결 전에도 대시보드가 '리밋 있는 축'을 알아야
             # 원점 버튼을 그릴 수 있다.
-            "limit_rev": self._cfg.limit_rev,
+            "limit_rev": self.limit_rev,
             # 사람은 mm 로 생각한다. 회전수를 mm 로 바꿔 쓰라고 환산 계수를 같이 준다
-            # (펌웨어는 회전수만 알고, mm 는 기구 제원이라 config 에만 있다).
+            # (펌웨어는 회전수만 알고, mm 는 기구 제원이라 여기서만 안다).
             "mm_per_rev": self._cfg.mm_per_rev,
-            "stroke_mm": self._cfg.stroke_mm,
+            "stroke_mm": self.stroke_mm,
             **self._state,
         }
 
@@ -315,7 +384,10 @@ class ConveyorController:
     def _simulated(self, command: str) -> str:
         """하드웨어 없이 UI/파이프라인만 확인할 때의 응답(simulate=True)."""
         if command == "START":
-            self._state.update(running=True, rpm=self._state.get("target_rpm") or 0.0)
+            # 펌웨어 beginRun() 과 동일하게 드라이버를 다시 켠다. 이게 없으면
+            # 비상 정지(DISABLE)로 꺼진 뒤 시뮬레이션에서만 계속 꺼진 것으로 보여
+            # '누른 뒤 원래대로 돌아온다'를 검증할 수 없다.
+            self._state.update(running=True, enabled=True, rpm=self._state.get("target_rpm") or 0.0)
             return "OK: STARTED"
         if command == "STOP":
             self._state.update(running=False, rpm=0.0)
@@ -340,6 +412,11 @@ class ConveyorController:
             self._state["limit_rev"] = float(command[6:])
             self._state.setdefault("pos_rev", 0.0)
             return f"OK: LIMIT={self._state['limit_rev']}"
+        if command.startswith("GOTO "):
+            # 시뮬레이션에서는 즉시 도착한 것으로 친다(이동 시간을 흉내내지 않는다).
+            self._state["pos_rev"] = float(command[5:])
+            self._state.update(running=False, rpm=0.0, sps=0.0)
+            return f"OK: GOTO {self._state['pos_rev']}"
         if command.startswith("SERVO "):
             self._state["servo_deg"] = int(command[6:])
             return f"OK: SERVO={self._state['servo_deg']}"

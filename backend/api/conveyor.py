@@ -112,6 +112,26 @@ def zero(name):
     return _ok(name, _belt(name).set_zero())
 
 
+@bp.post("/end", defaults={"name": None})
+@bp.post("/<name>/end")
+def set_end(name):
+    """지금 자리를 가동 범위의 끝으로 삼는다(끝점 티칭).
+
+    원점을 잡고 반대쪽 끝까지 몰고 온 뒤 부른다. 자로 재서 config 에 옮겨 적는
+    대신 축을 직접 움직여 정하므로 값이 실물과 어긋나지 않는다. 끝점은 파일에
+    저장돼 전원을 껐다 켜도 남는다.
+    """
+    return _ok(name, _belt(name).set_end())
+
+
+@bp.post("/move", defaults={"name": None})
+@bp.post("/<name>/move")
+def move(name):
+    """그 위치(mm)로 이동하고 스스로 멈춘다. 예: {"mm": 320}"""
+    body = request.get_json(silent=True) or {}
+    return _ok(name, _belt(name).move_to_mm(body.get("mm")))
+
+
 @bp.post("/release", defaults={"name": None})
 @bp.post("/<name>/release")
 def release(name):

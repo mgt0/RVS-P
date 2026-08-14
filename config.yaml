@@ -119,8 +119,8 @@ cameras:
   #   출력된 값을 각 줄에 exposure: -5 처럼 추가한다.
   cam1: { label: 오른쪽 수평 캠, match_name: Arducam, nth: 2, vflip: true,  lock_white_balance: false, view_dir: [ 0.7071, 0.0,   0.7071], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 오른쪽 대각선 위 (방위 +45°, 고도 +45°)
   cam2: { label: 왼쪽 수평 캠, match_name: Arducam, nth: 3, vflip: false,  lock_white_balance: false, view_dir: [-0.7071, 0.0,   0.7071], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 왼쪽 대각선 위   (방위 -45°, 고도 +45°)
-  cam3: { label: 왼쪽 위 대각 캠, match_name: Arducam, nth: 4, vflip: true,  lock_white_balance: false, view_dir: [-0.5,  0.7071, 0.5   ], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 왼쪽 대각선      (방위 -45°, 고도   0°)
-  cam4: { label: 오른쪽 위 대각 캠, match_name: Arducam, nth: 1, vflip: true, lock_white_balance: false, view_dir: [ 0.5,  0.7071, 0.5   ], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 오른쪽 대각선    (방위 +45°, 고도   0°)
+  cam3: { label: 왼쪽 위 대각 캠, match_name: Arducam, nth: 4, vflip: false, lock_white_balance: false, view_dir: [-0.5,  0.7071, 0.5   ], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 왼쪽 위 대각    (방위 -45°, 고도 +45°)
+  cam4: { label: 오른쪽 위 대각 캠, match_name: Arducam, nth: 1, vflip: false, lock_white_balance: false, view_dir: [ 0.5,  0.7071, 0.5   ], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 오른쪽 위 대각  (방위 +45°, 고도 +45°)
   cam5: { label: 하단 뷰 캠, match_name: Arducam, nth: 0, vflip: false, lock_white_balance: false, view_dir: [ 0.0,   -1.0,   0.0   ], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 하단 뷰
   # 글로벌 캠 = 로지텍 C270. 전체 작업 공간 조망용 — 3D 재구성에는 안 쓴다(view_dir 없음).
   global: { label: 글로벌 뷰 캠, match_name: C270, nth: 0, width: 640, height: 480, fps: 15, fourcc: MJPG }

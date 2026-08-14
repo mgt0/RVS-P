@@ -201,6 +201,11 @@
                     title="리밋 스위치가 없습니다. 축을 한쪽 끝으로 옮긴 뒤 눌러 원점을 잡으세요">
               원점 설정
             </button>
+            <button class="btn" @click="setBeltEnd(belt)"
+                    :disabled="belt.busy || !belt.port"
+                    title="원점을 잡고 반대쪽 끝까지 옮긴 뒤 누르세요. 여기가 가동 범위의 끝이 되고 저장됩니다">
+              끝점 설정
+            </button>
             <!-- 끝(상한)에 닿았을 때만 강조한다. 0 은 원점이라 정상 상태다 —
                  여기까지 붉게 칠하면 원점을 잡을 때마다 경고가 뜬다.
                  회전수가 아니라 mm 로 보여준다. 사람이 기구를 mm 로 재기 때문이다. -->
@@ -209,6 +214,21 @@
               {{ Math.round(Number(belt.pos_rev || 0) * belt.mm_per_rev) }} /
               {{ Math.round(belt.stroke_mm) }} mm
             </span>
+          </div>
+
+          <!-- 위치 슬라이더: 놓는 순간 그 위치로 이동하고 펌웨어가 스스로 멈춘다.
+               드래그 중(@input)이 아니라 놓을 때(@change)만 보낸다 — 끄는 동안
+               매 픽셀마다 명령을 쏘면 시리얼이 밀리고 모터가 덜컥거린다. -->
+          <div class="btn-row" v-if="belt.limit_rev"
+               style="margin-top:12px; align-items:center; gap:12px">
+            <span class="mono mono--xs">위치 이동</span>
+            <input type="range" style="flex:1 1 160px" min="0" step="1"
+                   :max="Math.round(belt.stroke_mm)"
+                   v-model.number="belt.moveInput"
+                   @change="moveBeltTo(belt)"
+                   :disabled="belt.busy || !belt.port"
+                   :aria-label="(belt.label || belt.name) + ' 목표 위치 (mm)'">
+            <span class="mono mono--xs">{{ Math.round(belt.moveInput || 0) }} mm</span>
           </div>
 
           <!-- 분류 게이트 서보 — 보드에 하나뿐이다. 펌웨어가 M1 상태에만 servo_deg 를

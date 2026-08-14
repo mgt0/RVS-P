@@ -138,7 +138,9 @@ def dfu_touch(port: str) -> None:
         print(f"1200bps 터치 실패({exc}). BOOT0+NRST 로 직접 DFU 에 넣어주세요.")
 
 
-def wait_for_dfu(programmer: Path, timeout_sec: float = 60.0) -> bool:
+def wait_for_dfu(programmer: Path, timeout_sec: float = 300.0) -> bool:
+    """DFU 장치를 기다린다. 기본 5분 — 손이 보드에 닿기까지 걸리는 시간을 감안한다
+    (60초로 뒀더니 버튼을 누르러 가는 사이에 끝나 있었다)."""
     deadline = time.monotonic() + timeout_sec
     announced = False
     while time.monotonic() < deadline:

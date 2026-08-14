@@ -420,8 +420,10 @@ createApp({
         // belt.busy = false 가 버려진 객체에만 적용된다 — 버튼이 잠긴 채 굳는다.
         if (belt) return Object.assign(belt, b);
         return {
-          // rpmInput 은 사용자가 입력 중인 값이라 서버 응답에 없다(폴링이 못 덮어쓴다)
+          // rpmInput/moveInput 은 사용자가 조작 중인 값이라 서버 응답에 없다
+          // (폴링이 못 덮어쓴다). 처음 만들 때만 현재 값으로 맞춰둔다.
           rpmInput: b.target_rpm ? Math.round(b.target_rpm * 100) / 100 : 2,
+          moveInput: Math.round((b.pos_rev || 0) * (b.mm_per_rev || 0)),
           busy: false,
           ...b,
         };
@@ -503,6 +505,22 @@ createApp({
       await beltCall(belt,
         () => api.post(`/api/conveyor/${belt.name}/zero`),
         '현재 위치를 원점으로 설정');
+    }
+
+    /* 끝점 티칭. 원점을 잡고 반대쪽 끝까지 몰고 온 뒤 누른다 — 자로 재서 config 에
+       옮겨 적는 대신 축을 직접 움직여 정하므로 값이 실물과 어긋나지 않는다. */
+    async function setBeltEnd(belt) {
+      await beltCall(belt,
+        () => api.post(`/api/conveyor/${belt.name}/end`),
+        '현재 위치를 가동 범위 끝으로 저장');
+    }
+
+    /* 슬라이더를 놓으면 그 위치로 이동한다(펌웨어가 도착해서 스스로 멈춘다). */
+    async function moveBeltTo(belt) {
+      const mm = Math.round(Number(belt.moveInput) || 0);
+      await beltCall(belt,
+        () => api.post(`/api/conveyor/${belt.name}/move`, { mm }),
+        `${mm}mm 로 이동`);
     }
 
     async function releaseBelt(belt) {
@@ -970,7 +988,7 @@ createApp({
       recording, connectedCount, totalCount, allConnected, canStart, cameraViews, objectCounts,
       refreshPorts, testConnections, identify, toggleTeleop, goHome,
       conveyors, beltStatusLabel, beltAtLimit, startBelt, stopBelt, setBeltSpeed,
-      toggleBeltDir, releaseBelt, setGate, setBeltZero,
+      toggleBeltDir, releaseBelt, setGate, setBeltZero, setBeltEnd, moveBeltTo,
       GATE_OPEN_DEG, GATE_CLOSE_DEG,
       setLabel, startRecording, stopRecording, dismiss, fmtDeg,
       // 에피소드 관리

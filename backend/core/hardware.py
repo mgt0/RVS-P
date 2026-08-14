@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import threading
 
-from ..config import AppConfig
+from ..config import PROJECT_ROOT, AppConfig
 from ..utils.errors import ArmConnectionError, ValidationError
 from .arm_controller import (
     ArmController,
@@ -20,6 +20,7 @@ from .arm_controller import (
     TeleopLoop,
 )
 from .act_trainer import TrainingManager
+from .calibration import Calibration
 from .camera_manager import CameraManager
 from .conveyor import ConveyorController
 from .port_finder import IdentifySession, PortRegistry
@@ -42,8 +43,12 @@ class HardwareHub:
 
         self.recorder = Recorder(cfg.recording, self.cameras, self.leader, self.follower)
         self.training = TrainingManager(cfg.recording.root)
+        # 사람이 직접 찍은 끝점 저장소. config 옆에 두어 설정과 함께 다니게 한다.
+        self.calibration = Calibration(PROJECT_ROOT / "calibration.json")
         self.conveyors = {
-            name: ConveyorController(c, simulate=cfg.server.simulate)
+            name: ConveyorController(
+                c, simulate=cfg.server.simulate, calibration=self.calibration, name=name
+            )
             for name, c in cfg.conveyors.items()
         }
         self._teleop: TeleopLoop | None = None
@@ -100,8 +105,20 @@ class HardwareHub:
 
         팔로워 토크는 켜둔다. 여기서 토크를 풀면 팔이 중력으로 낙하해
         '정지'가 오히려 충돌을 만든다. 멈춘 자세를 유지하는 것이 정지다.
+
+        상태를 걸어 잠그지 않는다(래치 없음). 스텝 드라이버는 DISABLE 로 꺼두지만
+        펌웨어의 beginRun() 이 START 를 받으면 스스로 다시 ENABLE 하므로, 누른 뒤
+        그냥 평소처럼 시작하면 원래대로 동작한다 — 별도 해제 절차가 필요 없다.
         """
         result: dict = {}
+        # rollout(autorun)을 가장 먼저 세운다. 이게 살아 있으면 팔로워에 계속
+        # 목표 각도를 밀어넣기 때문에, 나중에 멈추면 그 사이 팔이 더 움직인다.
+        try:
+            result["autorun"] = self.stop_autorun()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("비상 정지: rollout 정지 실패")
+            result["autorun"] = {"error": str(exc)}
+
         try:
             result["teleop"] = self.stop_teleop()
         except Exception as exc:  # noqa: BLE001
@@ -110,12 +127,18 @@ class HardwareHub:
 
         belts: dict = {}
         for name, ctrl in self.conveyors.items():
-            try:
-                ctrl.stop()
-                belts[name] = "stopped"
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("비상 정지: 벨트 %s 정지 실패", name)
-                belts[name] = f"error: {exc}"
+            # STOP(펄스 중단) 뒤 DISABLE(드라이버 차단)까지 간다. STOP 만 하면
+            # 여자 상태가 남아 홀딩 토크로 축을 계속 붙잡고 발열도 이어진다 —
+            # '전부 off' 가 아니다. 앞 단계가 실패해도 뒤 단계는 반드시 시도한다.
+            outcome = []
+            for step, action in (("stopped", ctrl.stop), ("disabled", lambda c=ctrl: c.set_enabled(False))):
+                try:
+                    action()
+                    outcome.append(step)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("비상 정지: 모터 %s %s 실패", name, step)
+                    outcome.append(f"{step} 실패: {exc}")
+            belts[name] = " + ".join(outcome)
         result["conveyors"] = belts
 
         if self.recorder.state.value != "IDLE":
