@@ -44,7 +44,13 @@ arms:
     joint_ids: [11, 12, 13, 14, 15, 16]
     # 그리퍼(6번, ID 16) 홈 각도 실측 완료(3축 통합 작업에서 측정) — 이전엔
     # 5개뿐이라 go_home() 이 그리퍼를 안 움직였으나 지금은 안전 위치가 채워져 있다.
-    home_position: [0.0, -90.0, 90.0, 0.0, 0.0, 0.0]
+    #
+    # 1번 관절(ID 11)이 180도인 이유: 0도로 두면 팔이 컨베이어 쪽을 향해 부딪힌다.
+    # 반대쪽을 보고 시작하도록 홈 자세를 돌려놨다. joint_limits 1번이 ±180 이라
+    # 180 은 경계값이지만 clamp 가 min/max 로 처리하므로 그대로 통과한다.
+    # 주의: 홈 복귀를 누르면 이 자세까지 30°/s 로 움직인다(0→180 이면 6초).
+    # 경로에 사람이나 물건이 없는지 보고 누를 것.
+    home_position: [180.0, -90.0, 90.0, 0.0, 0.0, 0.0]
 
 safety:
   # 1 tick(20ms) 당 허용 관절 변화량(deg).
@@ -111,10 +117,10 @@ cameras:
   # exposure 도 같이 고정해야 배경 참조가 오래간다. 값은 실측으로 정한다:
   #   (대시보드를 끄고) python scripts/find_cameras.py --tune-exposure
   #   출력된 값을 각 줄에 exposure: -5 처럼 추가한다.
-  cam1: { label: 오른쪽 위 대각 캠, match_name: Arducam, nth: 2, vflip: true,  lock_white_balance: false, view_dir: [ 0.5,  0.7071, 0.5   ], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 오른쪽 대각선 위 (방위 +45°, 고도 +45°)
-  cam2: { label: 왼쪽 위 대각 캠, match_name: Arducam, nth: 3, vflip: false,  lock_white_balance: false, view_dir: [-0.5,  0.7071, 0.5   ], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 왼쪽 대각선 위   (방위 -45°, 고도 +45°)
-  cam3: { label: 왼쪽 대각 캠, match_name: Arducam, nth: 4, vflip: true,  lock_white_balance: false, view_dir: [-0.7071, 0.0,   0.7071], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 왼쪽 대각선      (방위 -45°, 고도   0°)
-  cam4: { label: 오른쪽 수평 캠, match_name: Arducam, nth: 1, vflip: true, lock_white_balance: false, view_dir: [ 0.7071, 0.0,   0.7071], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 오른쪽 대각선    (방위 +45°, 고도   0°)
+  cam1: { label: 오른쪽 수평 캠, match_name: Arducam, nth: 2, vflip: true,  lock_white_balance: false, view_dir: [ 0.7071, 0.0,   0.7071], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 오른쪽 대각선 위 (방위 +45°, 고도 +45°)
+  cam2: { label: 왼쪽 수평 캠, match_name: Arducam, nth: 3, vflip: false,  lock_white_balance: false, view_dir: [-0.7071, 0.0,   0.7071], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 왼쪽 대각선 위   (방위 -45°, 고도 +45°)
+  cam3: { label: 왼쪽 위 대각 캠, match_name: Arducam, nth: 4, vflip: true,  lock_white_balance: false, view_dir: [-0.5,  0.7071, 0.5   ], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 왼쪽 대각선      (방위 -45°, 고도   0°)
+  cam4: { label: 오른쪽 위 대각 캠, match_name: Arducam, nth: 1, vflip: true, lock_white_balance: false, view_dir: [ 0.5,  0.7071, 0.5   ], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 오른쪽 대각선    (방위 +45°, 고도   0°)
   cam5: { label: 하단 뷰 캠, match_name: Arducam, nth: 0, vflip: false, lock_white_balance: false, view_dir: [ 0.0,   -1.0,   0.0   ], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -7, brightness: -64 }  # 하단 뷰
   # 글로벌 캠 = 로지텍 C270. 전체 작업 공간 조망용 — 3D 재구성에는 안 쓴다(view_dir 없음).
   global: { label: 글로벌 뷰 캠, match_name: C270, nth: 0, width: 640, height: 480, fps: 15, fourcc: MJPG }
