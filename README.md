@@ -295,26 +295,48 @@ Windows에서 실물 하드웨어로 끝까지 돌려서 검증하는 과정에�
 > (`safety.joint_limits`, `arms.follower.home_position`)이 아직 5개 값뿐이라
 > 그리퍼 축은 사실상 무제한으로 움직일 수 있다 — 아래 "다음 작업" 참고.
 
-### 다음 작업 (2026-08-11 기준)
+### `feature/integration` 병합 메모 (2026-08-14)
 
-**이번 세션에서 확인된 것**: teleop(그리퍼 포함) 됨. rollout 파이프라인(변환→학습→추론)
-5관절(그리퍼 제외) 데이터로 끝까지 검증됨. 그리퍼 포함 학습·rollout은 리더암 교체
-소동(관절 5·6번 이상 → 원래 리더 기구로 복귀)으로 이번엔 못 함.
+`feature/3axis-stepper-soft-pulse`(컨베이어 3축 스텝모터 통합, STM32 BlackPill 1보드
++ TB6600 3개, 소프트 펄스 전환)와 `feature/lerobot-rollout`(이 절 전체 — 모방학습
+파이프라인)을 `feature/integration` 브랜치로 병합했다. **base는 3axis 쪽** — 사용자
+지시로 포트 번호·카메라 매칭·컨베이어 설정 등 "장비 배선에 관한 값"은 전부 3axis
+브랜치 값을 그대로 썼다. 모방학습 관련 코드(`lerobot_bridge.py`, `rollout.py`,
+`act_trainer.py`, `to_lerobot.py`, `requirements-lerobot.txt`)는 lerobot-rollout
+쪽에서 그대로 가져왔다 — 이 부분은 3axis가 손대지 않아 충돌 없음.
 
+충돌은 `config.yaml`과 `run.py` 단 두 곳뿐이었다:
+- `config.yaml`의 `arms.leader/follower`: **port_hint는 3axis 값(COM6/COM7)을
+  유지**하고, lerobot-rollout 쪽에서 `scripts/find_ports.py`로 확인한
+  `serial_number`를 추가로 얹었다 — serial_number가 port_hint보다 매칭 우선순위가
+  높아 포트가 바뀌어도 안전하고, port_hint 정책과 충돌하지 않는다.
+- `run.py`: torch 우선 import(DLL 순서 문제 회피, lerobot-rollout)와 단일 인스턴스
+  락 + 스트림 포트 분리(3axis)는 서로 다른 관심사라 순서만 맞춰 이어붙였다.
+
+**병합으로 저절로 해결된 것** (3axis 브랜치가 자체적으로 이미 채워둔 값):
+- `safety.joint_limits`의 그리퍼(6번째) 범위 — `[-180, 180]`으로 넉넉히 열어두고
+  current 기반 모드의 전류 리밋으로 과도 조임을 막는 전략. **각도 자체를 실측한 건
+  아니라서**, 그리퍼가 실제로 안전한지는 처음 구동할 때 반드시 저속/근접 관찰로
+  확인할 것.
+- `arms.follower.home_position`의 그리퍼(6번째) 값 — 3axis 쪽에서 `0.0`으로 채워짐.
+  **이 값이 이 개체의 실제 그리퍼에서 안전한 홈 각도인지는 검증되지 않았다** —
+  통합 브랜치에서 처음 홈 복귀를 시킬 때 사람이 옆에서 지켜볼 것.
+
+**아직 안 된 것 (병합과 무관하게 그대로 남은 TODO)**:
 - [ ] **그리퍼 포함 모방학습 첫 검증** — 에피소드 1~2개 녹화(그리퍼 개폐 동작 포함,
       `--repo-id`는 기존 `omx/scan`과 겹치지 않게 새로 지정할 것 — 관절 수가 달라
       섞으면 `to_lerobot.py`가 깨짐) → 변환 → `lerobot-train` → `/api/rollout/start`
-      로 확인
-- [ ] **`safety.joint_limits`에 그리퍼(6번째) 범위 추가** — 실측 필요, 지금은
-      무제한(-180°~180°) 폴백이라 위험. `config.yaml` 해당 위치에 TODO 주석 남겨둠
-- [ ] **`arms.follower.home_position`에 그리퍼 안전 홈 각도 추가** — 지금은 5개뿐이라
-      홈 복귀 시 그리퍼가 안 움직임(에러는 안 남). `config.yaml`에 TODO 주석 남겨둠
+      로 확인. 아직 5관절(그리퍼 제외) 데이터로만 전체 파이프라인이 검증돼 있다.
 - [ ] **rollout `rate_hz` 실측 재확인** — 5Hz 요청 시 관측된 tick 수가 예상보다
       많았음(도구 호출 지연으로 인한 측정 오차일 가능성 높음, 코드 자체는 문제
       없어 보임) — 실제 벽시계 기준으로 다시 재볼 것
-- [ ] **목요일 하드웨어 배치 완료 후 시스템 통합** — 컨베이어(`conveyor.py`)·
-      CAD 기반 불량검사(`cad.py`)·모방학습(이 세션) 세 갈래를 실제로 합치는 단계.
-      `hardware.py`/`frontend/`가 공통 접점이니 병합 시 이 두 곳부터 diff 확인할 것
+- [ ] **병합 후 실물 통합 테스트** — `pytest`(시뮬레이션)는 전부 통과했지만, 컨베이어
+      3축(`lm` 포함) + 모방학습 rollout을 같은 서버 프로세스에서 동시에 띄워보는
+      건 아직 실물로 확인 안 됨. `hardware.py`가 둘의 공통 접점이니 이상 있으면
+      거기부터 볼 것.
+- [ ] **CAD 기반 불량검사(`cad.py`)까지 3갈래 완전 통합** — 컨베이어·모방학습은 이번에
+      합쳤고, CAD 검사(`feature/cad-inspection-and-fixes` 브랜치, 2026-08-11 12:05
+      마지막 푸시로 3axis보다 오래됨)는 아직 이 통합에 안 들어갔다.
 
 ---
 
