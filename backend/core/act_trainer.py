@@ -155,6 +155,11 @@ class LeRobotTrainer:
     이 서버 프로세스 안에서 돌릴 일이 아니다. 별도 프로세스로 띄우면 서버를
     재시작해도 학습이 살아남고, 로그·체크포인트 관리도 lerobot 이 이미 한다.
     여기서는 다음에 실행할 두 줄을 알려주는 역할만 한다.
+
+    (참고) rollout(자율 실행)은 반대로 이 프로세스 안에서 돌아야 한다 —
+    팔로워/카메라를 이미 이 프로세스가 쥐고 있기 때문이다. 그건
+    `backend/core/rollout.py`의 `AutoRunLoop`가 담당하고, 학습된 체크포인트만
+    (`scripts/to_lerobot.py` → `lerobot-train`이 만든 것) 넘겨받아 추론만 한다.
     """
 
     def run(self, ctrl: TrainingController) -> None:
@@ -164,7 +169,8 @@ class LeRobotTrainer:
             "실제 ACT 학습은 별도 프로세스에서 실행합니다:\n"
             f"  1) python scripts/to_lerobot.py --repo-id {repo_id}\n"
             f"  2) lerobot-train --dataset.repo_id={repo_id} --policy.type=act\n"
-            "이 화면의 실시간 차트는 DEMO 모드로 확인하세요.",
+            "이 화면의 실시간 차트는 DEMO 모드로 확인하세요.\n"
+            "학습이 끝나면 체크포인트 경로로 POST /api/rollout/start 를 호출하세요.",
         )
 
 

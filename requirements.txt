@@ -2,7 +2,13 @@
 Flask==3.0.3
 PyYAML==6.0.2
 pyserial==3.5
-opencv-python==4.10.0.84
+# opencv-python(비-headless)이 아니라 headless 버전을 쓴다 — 이 프로젝트는
+# cv2.imshow 등 GUI 창 함수를 어디서도 안 쓰고(전수 확인함), 나중에 lerobot을
+# 추가 설치하면 lerobot이 opencv-python-headless를 의존성으로 끌고 오는데,
+# 비-headless와 headless가 같이 깔리면 site-packages의 cv2 파일이 뒤섞여
+# 실제로 DLL 충돌을 겪었다(2026-08-11, README "Windows에서 실제로 겪은 문제" 참고).
+# 처음부터 headless만 쓰면 이 문제 자체가 생기지 않는다.
+opencv-python-headless==4.10.0.84
 numpy==1.26.4
 pandas==2.2.3
 pyarrow==17.0.0
@@ -12,8 +18,13 @@ scikit-image==0.24.0
 
 # --- 불량 분류 CNN (ResNet18 + LoRA). CPU 버전으로 충분하며, GPU 가 있으면
 # --- https://pytorch.org 의 CUDA 휠로 바꿔 설치하세요.
-torch
-torchvision
+# 버전을 lerobot의 요구 범위(torch<2.12.0,>=2.7)에 미리 맞춰뒀다 — 안 맞추면
+# requirements-lerobot.txt를 나중에 추가 설치할 때 torch를 통째로 지우고
+# 새로 깔게 되는데, 이 삭제/재설치 도중 파일이 일부만 바뀐 채 섞여 DLL 초기화가
+# 깨지는 걸 실제로 겪었다(2026-08-11). 처음부터 같은 범위로 깔면 재설치 자체가
+# 안 일어난다.
+torch>=2.7,<2.12.0
+torchvision>=0.22.0,<0.27.0
 
 # --- 카메라 이름 매칭 (Windows) ---
 # 정수 인덱스는 USB 를 다시 꽂으면 밀리므로 config 는 장치 이름으로 지목합니다.
@@ -31,3 +42,9 @@ gevent==24.2.1
 
 # --- 개발/테스트 (선택) ---
 pytest==8.3.3
+
+# --- 실제 LeRobot ACT 학습(별도 프로세스)/rollout (선택) ---
+# torch는 위에서 이미 CNN 분류용으로 설치됩니다. lerobot 패키지 자체만 추가로 필요한
+# 사람이 따로 설치: pip install -r requirements-lerobot.txt
+# (에피소드→LeRobotDataset 변환은 scripts/to_lerobot.py, 학습은 lerobot-train CLI를
+# 씁니다. rollout(자율 실행)만 이 서버 프로세스 안에서 lerobot을 import합니다.)

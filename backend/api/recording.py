@@ -41,6 +41,7 @@ def status():
             "leader": hub.leader.status(),
             "follower": hub.follower.status(),
             "teleop": hub.teleop_status,
+            "autorun": hub.autorun_status,
             "cameras": hub.cameras.status_all(),
         }
     )
@@ -118,6 +119,34 @@ def start_teleop():
 @bp.post("/teleop/stop")
 def stop_teleop():
     return jsonify({"ok": True, "teleop": current_hub().stop_teleop()})
+
+
+@bp.post("/rollout/start")
+def start_rollout():
+    """학습된 ACT 정책으로 팔로워 자율 제어 시작.
+
+    body: {"checkpoint": "<pretrained_model 폴더 경로, 필수>", "rate_hz": 10}
+    checkpoint는 lerobot-train 학습 로그 마지막 줄에 출력된 경로를 그대로 쓴다
+    (예: outputs/train/<job_name>/checkpoints/<step>/pretrained_model). 이 서버는
+    학습을 별도 프로세스로 돌리므로(act_trainer.LeRobotTrainer 참고) 어떤 체크포인트가
+    최신인지 스스로 알 수 없어 자동 선택을 지원하지 않는다.
+    """
+    body = request.json or {}
+    result = current_hub().start_autorun(
+        checkpoint=body.get("checkpoint"),
+        rate_hz=int(body.get("rate_hz", 10)),
+    )
+    return jsonify({"ok": True, "autorun": result})
+
+
+@bp.post("/rollout/stop")
+def stop_rollout():
+    return jsonify({"ok": True, "autorun": current_hub().stop_autorun()})
+
+
+@bp.get("/rollout/status")
+def rollout_status():
+    return jsonify({"ok": True, "autorun": current_hub().autorun_status})
 
 
 @bp.post("/arm/home")

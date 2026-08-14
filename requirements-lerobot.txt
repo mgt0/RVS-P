@@ -1,0 +1,30 @@
+# --- rollout(자율 실행) 전용, 선택 설치 ---
+#
+# torch는 requirements.txt에 이미 있습니다(CNN 분류용). 여기서는 lerobot
+# 패키지 자체만 추가로 설치합니다 — ACTPolicy.from_pretrained()로 학습된
+# 체크포인트를 불러와 실시간 추론(rollout)할 때만 필요합니다.
+#
+#   pip install -r requirements.txt -r requirements-lerobot.txt
+#
+# 데이터셋 변환은 scripts/to_lerobot.py, 학습은 `lerobot-train` CLI를 그대로
+# 씁니다(둘 다 별도 프로세스). 이 파일은 rollout 담당자만 설치하면 됩니다.
+#
+# Windows 설치 시 주의:
+#  - 카메라가 인식되지 않으면(huggingface/lerobot#1456) config.yaml의 camera
+#    설정을 match_name(장치 이름)으로 지정해보세요 — requirements.txt의
+#    pygrabber가 그 매칭을 지원합니다.
+#  - 시리얼 포트 관련 오류가 나면(huggingface/lerobot#1094) COM 포트 표기를
+#    확인하세요. omx-factory-system 자체 텔레옵이 이미 같은 포트로 동작
+#    중이라면 그 값 그대로 쓰면 됩니다.
+#
+# 이 파일만 설치해서는 안 끝난다 — 아래 5가지를 실제로 순서대로 겪었다.
+# README.md의 "Windows에서 실제로 겪은 문제 4가지" 섹션(사실상 5가지)에
+# 증상·원인·해결을 전부 적어뒀으니 에러 나면 거기부터 볼 것:
+#   1) torch DLL 초기화 실패(WinError 1114, c10.dll)
+#   2) lerobot[dataset]/lerobot[training] extras 누락
+#   3) lerobot-train 실행 시 --policy.repo_id 필수
+#   4) 리더/팔로워 관절 수 불일치로 rollout 추론 실패
+#   5) PolicyProcessorPipeline.from_pretrained() 직접 호출 시 postprocessor 깨짐
+#      (make_pre_post_processors()로 불러올 것)
+
+lerobot[dataset,training]>=0.5.0
