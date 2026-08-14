@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from backend.app import create_app
+from backend.app import create_app, enable_file_logging
 from backend.config import load_config
 
 _LOCK_PATH = Path(tempfile.gettempdir()) / "omx-scan-dashboard.lock"
@@ -97,6 +97,11 @@ def main() -> None:
     _acquire_single_instance_lock()
     _abort_if_already_running(cfg.server.port)
     app = create_app(cfg)
+    # 터미널을 띄운 사람만 로그를 볼 수 있으면 문제가 생겼을 때 옮겨 붙여야 한다.
+    # 파일로도 남겨 누가 띄웠든 같이 본다: python scripts/server_status.py
+    log_path = enable_file_logging()
+    if log_path:
+        print(f"로그: {log_path}   (상태 확인: python scripts/server_status.py)")
     _serve_streams(app, cfg)
     app.run(
         host=cfg.server.host,
