@@ -507,6 +507,17 @@ createApp({
         '현재 위치를 원점으로 설정');
     }
 
+    /* 토크 해제/걸기. 스텝모터는 정지 중에도 홀딩 토크가 걸려 있어 손으로 축을
+       밀 수 없다. 원점을 잡을 자리로 옮기려면 먼저 토크를 풀어야 한다.
+       손으로 민 거리는 펌웨어가 모르므로(펄스를 안 보냈다) 그 뒤 위치 표시는
+       믿을 수 없다 — 토크를 다시 걸고 원점을 잡으라고 알린다. */
+    async function toggleBeltTorque(belt) {
+      const next = belt.enabled === false;   // 지금 풀려 있으면 걸고, 걸려 있으면 푼다
+      await beltCall(belt,
+        () => api.post(`/api/conveyor/${belt.name}/enable`, { enabled: next }),
+        next ? '토크 걸림' : '토크 해제 — 손으로 옮긴 뒤 원점을 다시 잡으세요');
+    }
+
     /* 끝점 티칭. 원점을 잡고 반대쪽 끝까지 몰고 온 뒤 누른다 — 자로 재서 config 에
        옮겨 적는 대신 축을 직접 움직여 정하므로 값이 실물과 어긋나지 않는다. */
     async function setBeltEnd(belt) {
@@ -989,6 +1000,7 @@ createApp({
       refreshPorts, testConnections, identify, toggleTeleop, goHome,
       conveyors, beltStatusLabel, beltAtLimit, startBelt, stopBelt, setBeltSpeed,
       toggleBeltDir, releaseBelt, setGate, setBeltZero, setBeltEnd, moveBeltTo,
+      toggleBeltTorque,
       GATE_OPEN_DEG, GATE_CLOSE_DEG,
       setLabel, startRecording, stopRecording, dismiss, fmtDeg,
       // 에피소드 관리

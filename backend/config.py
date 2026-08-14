@@ -40,6 +40,11 @@ class CameraConfig:
     # 카메라를 거꾸로 매달았을 때 상하 반전. 프리뷰·녹화·분류 이미지 전부에 적용된다
     # (한 곳에서 뒤집어야 학습 데이터와 눈으로 본 화면이 어긋나지 않는다).
     vflip: bool = False
+    # 좌우(거울) 반전. 카메라가 뒤에서 비추거나 거울을 거쳐 보는 배치면 필요하다.
+    # 주의: 좌우 반전은 형상의 좌우 방향(카이랄리티)을 바꾼다 — 3D 재구성이
+    # view_dir 로 세운 좌표계와 어긋나면 형상이 거울상으로 나온다. 실제로 화면이
+    # 뒤집혀 보일 때만 켤 것.
+    hflip: bool = False
     # 3D 재구성용: '물체 → 카메라' 방향 벡터 [x, y, z]. +X 오른쪽, +Y 위, +Z 앞.
     # 크기는 무관(정규화한다). None 이면 reconstruct3d 의 기본값을 쓴다.
     view_dir: tuple[float, float, float] | None = None
@@ -227,6 +232,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             match_name=node.get("match_name"),
             nth=int(node.get("nth", 0)),
             vflip=bool(node.get("vflip", False)),
+            hflip=bool(node.get("hflip", False)),
             view_dir=(
                 tuple(float(v) for v in node["view_dir"])
                 if node.get("view_dir") else None

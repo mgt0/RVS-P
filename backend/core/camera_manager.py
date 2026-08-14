@@ -271,10 +271,15 @@ class _CameraWorker(threading.Thread):
                 self._truncated_count += 1
                 continue
 
-            if self.cfg.vflip:
-                # 캡처 직후 한 번만 뒤집는다. 프리뷰에서만 뒤집으면 저장된 학습
-                # 데이터는 거꾸로 남아, 눈으로는 멀쩡한데 모델만 이상해진다.
+            # 캡처 직후 한 번만 뒤집는다. 프리뷰에서만 뒤집으면 저장된 학습
+            # 데이터는 거꾸로 남아, 눈으로는 멀쩡한데 모델만 이상해진다.
+            # 0 = 상하, 1 = 좌우, -1 = 둘 다(180° 회전과 같다).
+            if self.cfg.vflip and self.cfg.hflip:
+                image = cv2.flip(image, -1)
+            elif self.cfg.vflip:
                 image = cv2.flip(image, 0)
+            elif self.cfg.hflip:
+                image = cv2.flip(image, 1)
 
             now = time.monotonic()
             self._publish(image, now)
