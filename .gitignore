@@ -14,7 +14,7 @@ lerobot_data/classification/
 # 카메라 식별 썸네일 등 임시 산출물
 scratch/
 
-# 학습 체크포인트
+# 학습 체크포인트 (lerobot-train 산출물 + rollout이 읽는 체크포인트, 어느 경로든 포함)
 checkpoints/
 
 # CAD 기준 모델은 각자 넣는다(용량 + 바이너리)

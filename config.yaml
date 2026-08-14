@@ -25,24 +25,33 @@ arms:
   leader:
     model: OMX-L
     baudrate: 1000000
-    # `udevadm info -a -n /dev/ttyACM0 | grep serial` 로 확인
-    serial_number: null
+    # scripts/find_ports.py 로 확인 (2026-08-14 재확인 — serial_number 매칭이
+    # 1순위라 포트가 COM6 이 아니게 바뀌어도 안전. port_hint 는 이 리그(3축 통합
+    # 기준) 배선의 폴백값이다.
+    serial_number: 976882E7503059384C2E3120FF07103B
     port_hint: COM6   # 관절 ID 1~6 확인됨 (6 = 그리퍼)
+    # 리더는 teleop 중 항상 토크 OFF라(사람이 손으로 움직임) home_position 6번째
+    # 값은 실기 구동에는 안 쓰이고 시뮬레이션 모드에서만 참조된다 — 임의값(0.0)이라도 안전하다.
     joint_ids: [1, 2, 3, 4, 5, 6]
     home_position: [0.0, -90.0, 90.0, 0.0, 0.0, 0.0]
 
   follower:
     model: OMX-F
     baudrate: 1000000
-    serial_number: null 
+    # scripts/find_ports.py 로 확인 (2026-08-14 재확인)
+    serial_number: 7646046C503059384C2E3120FF081821
     port_hint: COM7
     joint_ids: [11, 12, 13, 14, 15, 16]
+    # 그리퍼(6번, ID 16) 홈 각도 실측 완료(3축 통합 작업에서 측정) — 이전엔
+    # 5개뿐이라 go_home() 이 그리퍼를 안 움직였으나 지금은 안전 위치가 채워져 있다.
     home_position: [0.0, -90.0, 90.0, 0.0, 0.0, 0.0]
 
 safety:
   # 1 tick(20ms) 당 허용 관절 변화량(deg).
   # 값을 키우면 반응이 빨라지지만 리더가 튈 때 팔로워도 함께 튑니다.
   max_relative_target: 5.0
+  # 그리퍼(6번째) 리밋 실측 완료(3축 통합 작업) — current 기반 모드라 과도 조임은
+  # 전류 리밋이 막아주므로 각도 범위는 넉넉하게 잡았다.
   joint_limits:
     - [-180.0, 180.0]
     - [-120.0, 120.0]
