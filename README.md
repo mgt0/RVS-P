@@ -1,6 +1,8 @@
 # OMX SCAN CONTROL
 
-**한국어** | [English](README.en.md) | [中文](README.zh.md)
+[![한국어](https://img.shields.io/badge/lang-한국어-blue)](README.md)
+[![English](https://img.shields.io/badge/lang-English-lightgrey)](README.en.md)
+[![中文](https://img.shields.io/badge/lang-中文-lightgrey)](README.zh.md)
 
 ![license](https://img.shields.io/badge/license-MIT-blue.svg)
 ![python](https://img.shields.io/badge/python-3.12-blue.svg)
