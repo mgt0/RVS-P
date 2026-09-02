@@ -65,8 +65,10 @@ class AutoRunLoop(threading.Thread):
             while not self._stop_event.is_set():
                 tick_started = time.monotonic()
                 try:
+                    # 웨이포인트 재생(WaypointRunner)은 카메라를 보지 않는다.
+                    # 그 경우 카메라가 끊겼다고 재생을 세울 이유가 없다.
                     frames, _skew_ms = self._cameras.snapshot()
-                    if not frames:
+                    if not frames and getattr(self._runner, "needs_frames", True):
                         raise RuntimeError("카메라 프레임을 하나도 받지 못했습니다.")
 
                     follower_pos = self._follower.read()
@@ -79,6 +81,11 @@ class AutoRunLoop(threading.Thread):
                     self._follower.write(target)
                     self.tick_count += 1
                     last_ok = tick_started
+                    # 유한한 궤적(웨이포인트 재생)은 끝나면 스스로 멈춘다.
+                    # ACT 정책에는 done 이 없어 이 조건이 걸리지 않는다.
+                    if getattr(self._runner, "done", False):
+                        logger.info("궤적 재생 완료")
+                        break
                 except Exception as exc:  # 추론/통신 실패는 루프를 죽이지 않고 watchdog에 맡긴다
                     logger.warning("autorun tick 실패: %s", exc)
                     if tick_started - last_ok > watchdog_sec:
@@ -99,4 +106,6 @@ class AutoRunLoop(threading.Thread):
             "running": self.is_alive(),
             "fault": self.fault,
             "tick_count": self.tick_count,
+            # 웨이포인트 재생이면 진행률(progress_sec/total_sec)이 더 붙는다.
+            **(self._runner.status() if hasattr(self._runner, "status") else {}),
         }

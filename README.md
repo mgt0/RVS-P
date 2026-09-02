@@ -239,11 +239,27 @@ pip install -r requirements.txt -r requirements-lerobot.txt   # rollout 담당�
 
 ```
 POST /api/rollout/start   {"checkpoint": "outputs/train/<job>/checkpoints/<step>/pretrained_model"}
+POST /api/rollout/start   {"waypoints": "lerobot_data/waypoints/episode_000001.json", "speed": 1.0}
 POST /api/rollout/stop
 GET  /api/rollout/status
 ```
 
-- `checkpoint`는 필수다. 학습이 별도 프로세스라 이 서버는 어떤 체크포인트가
+**웨이포인트 재생 (학습 없이)** — 같은 동작을 반복하기만 하면 되는 작업이면 ACT
+학습·GPU가 필요 없다. 녹화한 에피소드를 각도 목록으로 뽑아 그대로 되돌린다:
+
+```bash
+python scripts/to_waypoints.py --episode 000001          # --tol 로 성김 조절(기본 1.5도)
+```
+
+출력은 사람이 읽고 텍스트 편집기로 고칠 수 있는 JSON이고, 재생은 결정적이다.
+`WaypointRunner`(`backend/core/waypoints.py`)가 `ActInferenceRunner` 와 같은
+`predict()` 시그니처라 `AutoRunLoop`(watchdog · SafetyGuard · 정지 경로)를 그대로
+쓴다 — 재생 전용 제어 루프는 없다. 카메라를 보지 않으며(`needs_frames = False`),
+궤적 끝에 닿으면 스스로 멈춘다. `/api/rollout/status` 에 `progress_sec`/`total_sec`
+가 붙는다. 팔이 목표에서 5도 이상 뒤처지면 재생 시계를 멈춰(도착 대기) 첫
+웨이포인트가 멀 때 궤적을 통째로 건너뛰는 걸 막는다.
+
+- `checkpoint` 또는 `waypoints` 중 하나는 필수다. `checkpoint` 는 학습이 별도 프로세스라 이 서버는 어떤 체크포인트가
   최신인지 알 방법이 없다 — `lerobot-train` 로그 마지막 줄에 찍힌 경로를 그대로 쓴다.
 - teleop과 rollout은 둘 다 `follower.write()`를 호출하는 루프라 **상호 배타적**이다.
   하나가 실행 중이면 다른 하나는 시작을 거부한다. `SafetyGuard`(소프트리밋 +

@@ -188,7 +188,13 @@ class HardwareHub:
         return {"running": running, "fault": self._teleop.fault if self._teleop else None}
 
     # ---------------------------------------------------------------- 자율실행(rollout)
-    def start_autorun(self, checkpoint: str | None = None, rate_hz: int = 10) -> dict:
+    def start_autorun(
+        self,
+        checkpoint: str | None = None,
+        rate_hz: int = 10,
+        waypoints: str | None = None,
+        speed: float = 1.0,
+    ) -> dict:
         """학습된 ACT 정책으로 팔로워를 자율 제어한다.
 
         teleop과는 상호 배타적이다 — 둘 다 follower.write()를 호출하는
@@ -200,29 +206,40 @@ class HardwareHub:
         pretrained_model/` 처럼 학습 로그 마지막 줄에 찍힌 경로를 그대로 넘겨라.
         """
         with self._lock:
-            if not checkpoint:
+            if not checkpoint and not waypoints:
                 raise ValidationError(
-                    "checkpoint 경로가 필요합니다. lerobot-train 학습 로그에 출력된 "
-                    "pretrained_model 폴더 경로를 넘기세요."
+                    "checkpoint 또는 waypoints 경로가 필요합니다. checkpoint 는 "
+                    "lerobot-train 로그에 출력된 pretrained_model 폴더, waypoints 는 "
+                    "scripts/to_waypoints.py 가 만든 JSON 경로입니다."
                 )
             if self._teleop and self._teleop.is_alive():
                 raise ValidationError("teleop이 실행 중입니다. 먼저 TELEOP STOP을 누르세요.")
             if self._autorun and self._autorun.is_alive():
                 return self._autorun.status()
 
-            # 지연 임포트: lerobot/torch 미설치 상태에서도 서버 자체는 기동돼야 한다.
-            from .lerobot_bridge import ActInferenceRunner, LeRobotUnavailableError
+            if waypoints:
+                from .waypoints import WaypointRunner
 
-            try:
-                runner = ActInferenceRunner(checkpoint)
-            except LeRobotUnavailableError as exc:
-                raise ValidationError(str(exc)) from exc
+                runner = WaypointRunner(waypoints, speed=speed)
+                expected = len(self.follower.cfg.joint_ids)
+                if runner.num_joints != expected:
+                    raise ValidationError(
+                        f"웨이포인트 관절 수({runner.num_joints})가 팔로워({expected})와 다릅니다."
+                    )
+            else:
+                # 지연 임포트: lerobot/torch 미설치 상태에서도 서버 자체는 기동돼야 한다.
+                from .lerobot_bridge import ActInferenceRunner, LeRobotUnavailableError
+
+                try:
+                    runner = ActInferenceRunner(checkpoint)
+                except LeRobotUnavailableError as exc:
+                    raise ValidationError(str(exc)) from exc
 
             self.follower.connect()
             self.follower.set_torque(True)
             self._autorun = AutoRunLoop(runner, self.follower, self.cameras, self.cfg.safety, rate_hz=rate_hz)
             self._autorun.start()
-            logger.info("autorun 시작: checkpoint=%s", checkpoint)
+            logger.info("autorun 시작: checkpoint=%s waypoints=%s", checkpoint, waypoints)
             return self._autorun.status()
 
     def stop_autorun(self) -> dict:
