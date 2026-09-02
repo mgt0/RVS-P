@@ -5,7 +5,19 @@ venv/
 .pytest_cache/
 .DS_Store
 .claude/
+.claude*
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+GEMINI.md
+.cursorrules
+.mcp.json
 .vscode/
+
+# 로컬 전용 / 비밀값
+.env
+.env.*
+*.local
 
 # 수집된 데이터는 버전관리 대상이 아니다 (용량 + 바이너리)
 lerobot_data/episodes/
