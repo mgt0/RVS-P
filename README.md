@@ -1,17 +1,17 @@
 # OMX SCAN CONTROL
 
-[![한국어](https://img.shields.io/badge/lang-한국어-blue)](README.md)
-[![English](https://img.shields.io/badge/lang-English-lightgrey)](README.en.md)
-[![中文](https://img.shields.io/badge/lang-中文-lightgrey)](README.zh.md)
+[![한국어](https://img.shields.io/badge/lang-한국어-e11d48)](README.md)
+[![English](https://img.shields.io/badge/lang-English-2563eb)](README.en.md)
+[![中文](https://img.shields.io/badge/lang-中文-f59e0b)](README.zh.md)
 
-![license](https://img.shields.io/badge/license-MIT-blue.svg)
-![python](https://img.shields.io/badge/python-3.12-blue.svg)
-![platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)
-![tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)
-![last commit](https://img.shields.io/github/last-commit/mgt0/OMX-FACTORY-SYSTEM)
-![repo size](https://img.shields.io/github/repo-size/mgt0/OMX-FACTORY-SYSTEM)
-![issues](https://img.shields.io/github/issues/mgt0/OMX-FACTORY-SYSTEM)
-![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)
+![license](https://img.shields.io/badge/license-MIT-22c55e)
+![python](https://img.shields.io/badge/python-3.12-3776AB)
+![platform](https://img.shields.io/badge/platform-Windows-0078D6)
+![tests](https://img.shields.io/badge/tests-passing-16a34a)
+![last commit](https://img.shields.io/github/last-commit/mgt0/OMX-FACTORY-SYSTEM?color=f59e0b)
+![repo size](https://img.shields.io/github/repo-size/mgt0/OMX-FACTORY-SYSTEM?color=eab308)
+![issues](https://img.shields.io/github/issues/mgt0/OMX-FACTORY-SYSTEM?color=8b5cf6)
+![PRs welcome](https://img.shields.io/badge/PRs-welcome-ec4899)
 
 ROBOTIS OMX-L(리더) / OMX-F(팔로워) 텔레오퍼레이션 + 5축 카메라 스캔 데이터 수집 대시보드.
 한 번의 시연으로 **LeRobot ACT 학습용 시퀀스**와 **양품/불량 CNN 분류용 정지 이미지**를 동시에 수집합니다.
