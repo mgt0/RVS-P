@@ -424,3 +424,9 @@ pytest
 
 하드웨어 없이 35개 테스트가 돕니다 — 안전 클램프, 경로 조작 방어, 상태 전이, 동기화 회귀,
 ACT 회귀 지표(success@τ 경계), 3D 재구성, 불량 오버레이 검증.
+
+---
+
+## 라이선스 / License
+
+MIT — [LICENSE](LICENSE) 참고. / See [LICENSE](LICENSE).
