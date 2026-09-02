@@ -1,5 +1,10 @@
 # OMX SCAN CONTROL
 
+![license](https://img.shields.io/badge/license-MIT-blue.svg)
+![python](https://img.shields.io/badge/python-3.12-blue.svg)
+![platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)
+![tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)
+
 ROBOTIS OMX-L(리더) / OMX-F(팔로워) 텔레오퍼레이션 + 5축 카메라 스캔 데이터 수집 대시보드.
 한 번의 시연으로 **LeRobot ACT 학습용 시퀀스**와 **양품/불량 CNN 분류용 정지 이미지**를 동시에 수집합니다.
 
