@@ -125,7 +125,10 @@ def stop_teleop():
 def start_rollout():
     """학습된 ACT 정책으로 팔로워 자율 제어 시작.
 
-    body: {"checkpoint": "<pretrained_model 폴더 경로, 필수>", "rate_hz": 10}
+    body: {"checkpoint": "<pretrained_model 폴더 경로>", "rate_hz": 10}
+       또는 {"waypoints": "<to_waypoints.py 가 만든 JSON 경로>", "speed": 1.0}
+
+    waypoints 는 학습 없이 시연 궤적을 그대로 되돌리는 경로다(신경망 미사용).
     checkpoint는 lerobot-train 학습 로그 마지막 줄에 출력된 경로를 그대로 쓴다
     (예: outputs/train/<job_name>/checkpoints/<step>/pretrained_model). 이 서버는
     학습을 별도 프로세스로 돌리므로(act_trainer.LeRobotTrainer 참고) 어떤 체크포인트가
@@ -135,6 +138,8 @@ def start_rollout():
     result = current_hub().start_autorun(
         checkpoint=body.get("checkpoint"),
         rate_hz=int(body.get("rate_hz", 10)),
+        waypoints=body.get("waypoints"),
+        speed=float(body.get("speed", 1.0)),
     )
     return jsonify({"ok": True, "autorun": result})
 
