@@ -1,4 +1,4 @@
-# OMX SCAN CONTROL
+# RVS-P (Robot-Vision Scan Platform)
 
 [![한국어](https://img.shields.io/badge/lang-한국어-e11d48)](README.md)
 [![English](https://img.shields.io/badge/lang-English-2563eb)](README.en.md)
@@ -8,10 +8,14 @@
 ![python](https://img.shields.io/badge/python-3.12-3776AB)
 ![platform](https://img.shields.io/badge/platform-Windows-0078D6)
 ![tests](https://img.shields.io/badge/tests-passing-16a34a)
-![last commit](https://img.shields.io/github/last-commit/mgt0/OMX-FACTORY-SYSTEM?color=f59e0b)
-![repo size](https://img.shields.io/github/repo-size/mgt0/OMX-FACTORY-SYSTEM?color=eab308)
-![issues](https://img.shields.io/github/issues/mgt0/OMX-FACTORY-SYSTEM?color=8b5cf6)
+![last commit](https://img.shields.io/github/last-commit/mgt0/RVS-P?color=f59e0b)
+![repo size](https://img.shields.io/github/repo-size/mgt0/RVS-P?color=eab308)
+![issues](https://img.shields.io/github/issues/mgt0/RVS-P?color=8b5cf6)
 ![PRs welcome](https://img.shields.io/badge/PRs-welcome-ec4899)
+
+**机器人·视觉一体化产品检测平台。** 通过模仿学习（LeRobot ACT）学会动作的机械臂把产品放上传送带，
+传送带停止后由 5 台相机从侧面和底部拍摄，重建 3D 形状，并与标准 CAD（STL）模型比较、标出偏差部位。
+机器人、相机与传送带都在同一个 Web 仪表盘中操作。
 
 面向 ROBOTIS OMX-L（主臂）/ OMX-F（从臂）遥操作与 5 相机扫描数据采集的仪表盘。
 一次演示即可同时采集 **用于 LeRobot ACT 训练的序列** 和 **用于良品/缺陷 CNN 分类的静态图像**。

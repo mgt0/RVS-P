@@ -1,4 +1,4 @@
-# OMX SCAN CONTROL
+# RVS-P (Robot-Vision Scan Platform)
 
 [![한국어](https://img.shields.io/badge/lang-한국어-e11d48)](README.md)
 [![English](https://img.shields.io/badge/lang-English-2563eb)](README.en.md)
@@ -8,10 +8,15 @@
 ![python](https://img.shields.io/badge/python-3.12-3776AB)
 ![platform](https://img.shields.io/badge/platform-Windows-0078D6)
 ![tests](https://img.shields.io/badge/tests-passing-16a34a)
-![last commit](https://img.shields.io/github/last-commit/mgt0/OMX-FACTORY-SYSTEM?color=f59e0b)
-![repo size](https://img.shields.io/github/repo-size/mgt0/OMX-FACTORY-SYSTEM?color=eab308)
-![issues](https://img.shields.io/github/issues/mgt0/OMX-FACTORY-SYSTEM?color=8b5cf6)
+![last commit](https://img.shields.io/github/last-commit/mgt0/RVS-P?color=f59e0b)
+![repo size](https://img.shields.io/github/repo-size/mgt0/RVS-P?color=eab308)
+![issues](https://img.shields.io/github/issues/mgt0/RVS-P?color=8b5cf6)
 ![PRs welcome](https://img.shields.io/badge/PRs-welcome-ec4899)
+
+**로봇·비전 통합 제품 검사 플랫폼.** 모방학습(LeRobot ACT)으로 동작을 배운 로봇팔이 제품을
+컨베이어에 올리고, 벨트가 멈추면 카메라 5대가 옆면·바닥까지 촬영해 3D 형상을 복원한 뒤
+정상품 CAD(STL) 모델과 비교해 어긋난 부위를 표시합니다. 로봇·카메라·컨베이어는 웹 대시보드
+하나에서 다룹니다.
 
 ROBOTIS OMX-L(리더) / OMX-F(팔로워) 텔레오퍼레이션 + 5축 카메라 스캔 데이터 수집 대시보드.
 한 번의 시연으로 **LeRobot ACT 학습용 시퀀스**와 **양품/불량 CNN 분류용 정지 이미지**를 동시에 수집합니다.

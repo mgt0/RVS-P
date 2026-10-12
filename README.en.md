@@ -1,4 +1,4 @@
-# OMX SCAN CONTROL
+# RVS-P (Robot-Vision Scan Platform)
 
 [![한국어](https://img.shields.io/badge/lang-한국어-e11d48)](README.md)
 [![English](https://img.shields.io/badge/lang-English-2563eb)](README.en.md)
@@ -8,10 +8,16 @@
 ![python](https://img.shields.io/badge/python-3.12-3776AB)
 ![platform](https://img.shields.io/badge/platform-Windows-0078D6)
 ![tests](https://img.shields.io/badge/tests-passing-16a34a)
-![last commit](https://img.shields.io/github/last-commit/mgt0/OMX-FACTORY-SYSTEM?color=f59e0b)
-![repo size](https://img.shields.io/github/repo-size/mgt0/OMX-FACTORY-SYSTEM?color=eab308)
-![issues](https://img.shields.io/github/issues/mgt0/OMX-FACTORY-SYSTEM?color=8b5cf6)
+![last commit](https://img.shields.io/github/last-commit/mgt0/RVS-P?color=f59e0b)
+![repo size](https://img.shields.io/github/repo-size/mgt0/RVS-P?color=eab308)
+![issues](https://img.shields.io/github/issues/mgt0/RVS-P?color=8b5cf6)
 ![PRs welcome](https://img.shields.io/badge/PRs-welcome-ec4899)
+
+**A robot-vision product inspection platform.** A robot arm trained by imitation learning
+(LeRobot ACT) places a part on the conveyor; when the belt stops, five cameras capture it
+from the sides and bottom, reconstruct its 3D shape, and compare it against the reference
+CAD (STL) model to highlight deviating regions. The robot, cameras, and conveyor are all
+operated from a single web dashboard.
 
 A dashboard for ROBOTIS OMX-L (leader) / OMX-F (follower) teleoperation plus 5-camera
 scan data collection. A single demonstration collects both a **sequence for LeRobot ACT
