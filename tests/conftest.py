@@ -12,7 +12,9 @@ conftest 는 어떤 테스트 모듈보다 먼저 임포트되므로 여기가 �
 
 try:
     import torch  # noqa: F401
-except ImportError:
+except (ImportError, OSError):
     # torch 미설치 환경(=모방학습을 안 쓰는 경우)에서는 조용히 넘어간다.
     # 그 경우 test_episodes.py 는 pytest 가 알아서 스킵/에러 처리한다.
+    # OSError 는 설치는 됐지만 OS 정책이 DLL 을 막은 경우(WinError 4551, 2026-10-28 실측) —
+    # 이걸 안 잡으면 torch 와 무관한 테스트까지 수집 단계에서 전부 죽는다.
     pass

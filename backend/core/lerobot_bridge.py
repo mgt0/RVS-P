@@ -45,9 +45,11 @@ def _import_act_policy() -> Any:
 
     try:
         import torch  # noqa: F401
-    except ImportError as exc:
+    except (ImportError, OSError) as exc:   # OSError: 스마트 앱 컨트롤이 torch DLL 을 막을 때(WinError 4551)
         raise LeRobotUnavailableError(
             "torch가 설치되어 있지 않습니다. `pip install torch` 후 다시 시도하세요."
+            if isinstance(exc, ImportError) else
+            f"torch 를 불러오지 못했습니다(보안 정책 차단 등): {exc}"
         ) from exc
 
     candidates = ["lerobot.policies.act.modeling_act", "lerobot.common.policies.act.modeling_act"]

@@ -28,7 +28,7 @@ from pathlib import Path
 # run.py 와 같은 이유의 선점 import (CLAUDE.md 참고). 지우지 말 것.
 try:
     import torch  # noqa: F401
-except ImportError:
+except (ImportError, OSError):   # OSError: OS 정책이 torch DLL 을 막은 경우(WinError 4551)
     pass
 
 import pandas as pd
