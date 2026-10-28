@@ -1,0 +1,106 @@
+/* =============================================================
+   장비 제어 화면 — 접두어 eq-. 색·크기는 tokens.css 변수만 쓴다.
+   letter-spacing·text-transform 은 쓰지 않는다. 공용 모양(버튼·카드·표·지시계·메뉴)은 base.css 의 rv-*.
+   ============================================================= */
+
+.eq-screen { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
+.eq-sec { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.eq-sec__head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+.eq-sec__tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 12px; min-width: 0; }
+.eq-sec__note { font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+.eq-sub { font-size: var(--fs-body); line-height: var(--lh-body); font-weight: 600; }
+
+/* 한 줄에 몇 칸이든 넘치지 않게 */
+.eq-grid { display: grid; gap: 20px; min-width: 0; }
+.eq-grid--belts { grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
+/* 300px: 카메라가 6대라 데스크톱 3열 → 2열 → 1열로 접혀 마지막 줄이 홀로 남지 않는다(레거시 grid--scan 은 290px) */
+.eq-grid--cams { grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); }
+
+/* ---------- 컨베이어 카드 ---------- */
+.eq-belt { gap: 16px; }
+.eq-belt__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.eq-belt__head .rv-status { font-size: 14px; font-weight: 500; text-align: right; }
+.eq-belt__meta { font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+.eq-belt__row { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.eq-belt__reason { font-size: var(--fs-small); line-height: var(--lh-small); }
+.eq-belt__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: auto; }
+.eq-belt__actions .rv-menu { margin-left: auto; }
+
+/* RPM: 라벨 / [−][숫자][+] */
+.eq-rpm { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.eq-rpm__label { font-size: var(--fs-small); line-height: var(--lh-small); font-weight: 600; color: var(--ink-2); }
+.eq-rpm__ctl { display: inline-flex; align-items: center; border-radius: var(--r-pill); background: var(--bg); }
+.eq-rpm__in { width: 84px; min-height: 44px; padding: 0 4px; border: 0; background: transparent; text-align: center; font-weight: 600; }
+.eq-rpm__in:disabled { background: transparent; }
+.eq-rpm__in[aria-invalid="true"] { box-shadow: inset 0 -2px 0 var(--warn); }
+.eq-step {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ink);
+  font-size: 20px;
+  line-height: 1;
+}
+.eq-step:active { opacity: 0.6; }
+.eq-step:disabled { color: var(--ink-2); }
+
+/* LM 가이드: 위치 막대 + 목표 위치 입력 */
+.eq-lm { display: flex; flex-direction: column; gap: 10px; }
+.eq-lm__now { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; font-size: 14px; line-height: 19px; }
+.eq-lm__scale { display: flex; justify-content: space-between; gap: 8px; font-size: var(--fs-cap); line-height: var(--lh-cap); color: var(--ink-2); }
+.eq-move { display: flex; align-items: flex-end; gap: 8px; }
+.eq-move .rv-field { flex: 1 1 auto; }
+.eq-move .rv-field input { width: 100%; }
+
+/* 분류 게이트 */
+.eq-gate { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.eq-gate__name { margin-right: auto; font-size: 14px; }
+
+/* ---------- 로봇 팔 ---------- */
+.eq-arm { gap: 16px; }
+.eq-arm__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.eq-arm__tools { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.eq-arm__fault, .eq-arm__why { font-size: 14px; line-height: 19px; }
+.eq-arm__fault { font-weight: 600; }
+.eq-joints__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+
+/* 한계 열: [하한][지시계][상한] — 지시계가 남는 폭을 다 먹는다 */
+.eq-joints { min-width: 620px; }
+.eq-joints .eq-j__follow { font-weight: 600; }
+.eq-joints .eq-j__lead { color: var(--ink-2); }
+.eq-joints .eq-j__range-cell { width: 45%; }
+.eq-j__range { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; align-items: center; gap: 8px; font-size: var(--fs-cap); line-height: var(--lh-cap); color: var(--ink-2); }
+.eq-j__lim:first-child { text-align: right; }
+
+.eq-home__warn { line-height: 22px; }
+
+/* ---------- 카메라 카드 ---------- */
+.eq-cam { min-width: 0; overflow: hidden; border-radius: var(--r-card); background: var(--surface); }
+/* 녹화 중 강조 — 무채색 테두리 + '녹화 중' 글자. outline 은 안쪽 카메라 프레임 위에 그려진다 */
+.eq-cam--rec { outline: 3px solid var(--ink); outline-offset: -3px; }
+.eq-cam__rec { position: absolute; top: 8px; left: 8px; display: inline-flex; padding: 2px 10px; border-radius: var(--r-pill); background: var(--surface); font-size: var(--fs-cap); line-height: var(--lh-cap); font-weight: 600; }
+.eq-cam__body { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px 14px; }
+.eq-cam__top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.eq-cam__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.eq-cam__fps { flex: none; font-size: 14px; font-weight: 600; }
+.eq-cam__fps .rv-muted { font-weight: 500; }
+.eq-cam__meta { overflow-wrap: anywhere; }
+
+/* ---------- 좁은 화면: 관절 표를 카드처럼 쌓는다(가로 스크롤 없음) ---------- */
+@media (max-width: 640px) {
+  .eq-sec__tools { justify-content: flex-start; }
+  .eq-joints { min-width: 0; }
+  .eq-joints thead { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .eq-joints, .eq-joints tbody { display: block; }
+  .eq-joints tr { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; padding: 12px 0; border-top: 1px solid var(--line); }
+  .eq-joints tbody tr:first-child { border-top: 0; }
+  .eq-joints tbody th { grid-column: 1 / -1; padding: 0; font-weight: 600; }
+  .eq-joints td { display: block; padding: 0; text-align: left; }
+  .eq-joints td:first-child, .eq-joints td:last-child { padding: 0; }
+  .eq-joints td::before { content: attr(data-label); display: block; font-size: var(--fs-cap); line-height: var(--lh-cap); font-weight: 600; color: var(--ink-2); }
+  .eq-joints .eq-j__range-cell { grid-column: 1 / -1; width: auto; }
+}

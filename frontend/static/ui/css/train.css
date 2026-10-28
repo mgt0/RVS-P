@@ -1,0 +1,160 @@
+/* =============================================================
+   학습 화면 (train.js) — 접두어 tr-. 색·크기는 tokens.css 의 변수만 쓴다.
+   letter-spacing·text-transform 선언 없음. 모노 글꼴은 <code> 에만.
+   ============================================================= */
+
+.tr-screen { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
+/* 카드 안쪽 여백(24)이 카드 사이 간격(24)보다 작지 않게 — 초안의 값 */
+.tr-screen > .rv-card { padding: 24px; gap: 16px; }
+
+/* 키 이름(step, loss, smp/s …)은 칩이 아니라 본문 안의 작은 모노 글자로 쓴다 */
+.tr-screen code.tr-k { padding: 0; background: none; font-size: var(--fs-cap); line-height: inherit; }
+.tr-screen code.tr-k--mut { color: var(--ink-2); }
+.tr-warn { color: var(--warn); }
+
+/* ---------- 머리 ---------- */
+.tr-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.tr-head__text { flex: 1 1 360px; min-width: 0; }
+.tr-head__mode { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; max-width: 100%; }
+.tr-head__mode p { margin: 0; text-align: right; color: var(--ink-2); }
+@media (max-width: 640px) {
+  .tr-head__mode { align-items: flex-start; }
+  .tr-head__mode p { text-align: left; }
+}
+
+.tr-screen .rv-card h2 + p { margin-top: 4px; }
+.tr-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+
+/* ---------- 데모 폼 ---------- */
+.tr-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); align-items: end; gap: 16px; }
+.tr-form__act { display: flex; flex-wrap: wrap; gap: 12px; }
+
+/* ---------- 기록 없음: 명령 복사 ---------- */
+.tr-empty { display: flex; align-items: flex-start; gap: 12px; }
+.tr-empty .rv-status { padding-top: 2px; }
+.tr-cmd { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding-top: 0; }
+.tr-cmd__text {
+  flex: 1 1 280px;
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: var(--r-ctl);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tr-cmds { display: flex; flex-direction: column; gap: 8px; }
+.tr-cmds .rv-steps__n { margin-top: 8px; }   /* 44px 높이 줄의 한가운데 */
+.tr-copy { min-height: var(--lh-small); color: var(--ink); }
+.tr-copy:empty { min-height: 0; margin-top: -8px; }   /* 비어 있어도 aria-live 영역은 남기되 자리는 먹지 않는다 */
+.tr-err { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); }
+
+/* ---------- 지표 카드 머리 ---------- */
+.tr-screen > .tr-run { gap: 20px; }
+.tr-run__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 16px; }
+.tr-run__id { min-width: 0; }
+.tr-run__id p { margin: 4px 0 0; }
+.tr-run__ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.tr-run__ctl .rv-status { font-weight: 600; }
+
+/* ---------- 진행 줄 ---------- */
+.tr-cells { margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 16px 24px; }
+.tr-cell { min-width: 0; }
+.tr-cell dt { font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+.tr-cell dd { margin: 4px 0 0; }
+.tr-cell__big { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; font-size: var(--fs-num); line-height: var(--lh-num); font-weight: 700; font-variant-numeric: tabular-nums; }
+.tr-cell__of { font-size: var(--fs-body); line-height: var(--lh-body); font-weight: 500; color: var(--ink-2); }
+.tr-cell__note { margin-top: 4px; font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.tr-bar { margin-top: 8px; }
+
+/* ---------- 선 그래프 ---------- */
+.tr-plot { display: grid; grid-template-columns: 44px minmax(0, 1fr); column-gap: 8px; row-gap: 4px; }
+.tr-plot__y {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  text-align: right;
+  font-size: var(--fs-cap);
+  line-height: var(--lh-cap);
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.tr-plot__y--mid { justify-content: center; }
+.tr-plot--sm .tr-plot__y, .tr-plot--sm .tr-plot__svg { height: 64px; }
+.tr-plot--lg .tr-plot__y, .tr-plot--lg .tr-plot__svg { height: 220px; }
+.tr-plot__svg { display: block; width: 100%; }
+.tr-plot__svg line, .tr-plot__svg path { vector-effect: non-scaling-stroke; }
+.tr-plot__grid { stroke: var(--line); stroke-width: 1; }
+.tr-plot__line { fill: none; stroke: var(--ink); stroke-width: 1.75; stroke-linejoin: round; stroke-linecap: round; }
+.tr-plot--lg .tr-plot__line { stroke-width: 2; }
+.tr-plot__line--dash { stroke: var(--ink-2); stroke-dasharray: 4 3; stroke-linecap: butt; }
+/* 검증 손실 점: 흰 테두리 위에 회색 점(선과 겹쳐도 보이게) */
+.tr-plot__dot-bg { fill: none; stroke: var(--surface); stroke-width: 10px; stroke-linecap: round; }
+.tr-plot__dot { fill: none; stroke: var(--ink-2); stroke-width: 6px; stroke-linecap: round; }
+.tr-plot__x { display: flex; justify-content: space-between; font-size: var(--fs-cap); line-height: var(--lh-cap); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.tr-plot__x--3 { display: grid; grid-template-columns: 1fr auto 1fr; }
+.tr-plot__x--3 span:first-child { justify-self: start; }
+.tr-plot__x--3 span:last-child { justify-self: end; }
+
+/* 범례·견본 선 */
+.tr-sw--solid { fill: none; stroke: var(--ink); stroke-width: 2; stroke-linecap: round; }
+.tr-sw--dash { fill: none; stroke: var(--ink-2); stroke-width: 2; stroke-dasharray: 3 2; }
+.tr-sw--dot { fill: none; stroke: var(--ink-2); stroke-width: 6; stroke-linecap: round; }
+
+/* ---------- 큰 손실 차트 ---------- */
+.tr-loss { display: flex; flex-direction: column; gap: 8px; }
+.tr-loss__head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; }
+.tr-loss__t { font-size: var(--fs-body); line-height: var(--lh-body); font-weight: 600; }
+.tr-loss__now { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 12px; }
+.tr-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+.tr-legend__i { display: inline-flex; align-items: center; gap: 6px; }
+
+/* 손실 요약 한 줄 */
+.tr-sum { margin: 4px 0 0; padding-top: 12px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px 28px; font-size: var(--fs-small); line-height: var(--lh-small); }
+.tr-sum dt { color: var(--ink-2); }
+.tr-sum dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tr-sum dd span { font-weight: 400; }
+
+/* ---------- 데모 결과 ---------- */
+.tr-result { display: flex; flex-direction: column; gap: 16px; }
+.tr-joints-wrap { display: flex; flex-direction: column; gap: 8px; }
+.tr-joints-wrap h4 { margin: 0; font-size: var(--fs-small); line-height: var(--lh-small); font-weight: 600; color: var(--ink-2); }
+.tr-joints { display: flex; flex-direction: column; gap: 8px; }
+.tr-joints li { display: grid; grid-template-columns: 56px minmax(0, 1fr) 72px; align-items: center; gap: 12px; font-size: 14px; line-height: 19px; }
+.tr-joints__v { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tr-joints__fill--over { background: var(--warn); }
+
+/* ---------- 작은 패널 ---------- */
+.tr-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); grid-auto-rows: 1fr; gap: 16px; }
+.tr-panel { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.tr-panel__t { font-size: var(--fs-body); line-height: var(--lh-body); }
+.tr-panel__v { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 14px; min-height: 28px; }
+.tr-panel__val { display: inline-flex; align-items: baseline; gap: 4px; }
+.tr-panel__val svg { align-self: center; flex: none; }
+.tr-panel__num { font-size: var(--fs-h2); line-height: var(--lh-h2); font-weight: 700; font-variant-numeric: tabular-nums; }
+.tr-panel__v--multi .tr-panel__num { font-size: var(--fs-h3); line-height: var(--lh-h3); }
+.tr-panel__cap { font-size: var(--fs-body); line-height: var(--lh-body); font-weight: 500; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.tr-panel__n { margin: 0; min-height: 36px; font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+
+/* ---------- GPU ---------- */
+.tr-gpu { display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.tr-gpu__head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; }
+.tr-gpu__head p { margin: 0; }
+.tr-gpu__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 16px 24px; }
+.tr-gpu__item { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.tr-gpu__big { font-size: var(--fs-num); line-height: var(--lh-num); font-weight: 700; font-variant-numeric: tabular-nums; }
+.tr-gpu__item .rv-status { font-size: var(--fs-small); line-height: var(--lh-small); font-weight: 600; color: var(--warn); }
+
+.tr-foot { margin: 0; padding-top: 12px; border-top: 1px solid var(--line); font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+
+/* ---------- 데이터 준비도 ---------- */
+.tr-ready { --rv-meter-label: 104px; --rv-meter-value: 76px; display: flex; flex-direction: column; gap: 12px; }
+.tr-ready .rv-meter__label { font-size: 14px; line-height: 19px; color: var(--ink); }
+.tr-ready .rv-meter__text { font-size: 14px; line-height: 19px; }
+.tr-note { display: flex; align-items: flex-start; gap: 10px; padding-top: 16px; border-top: 1px solid var(--line); }
+.tr-note .rv-status { padding-top: 1px; }
+.tr-note p { margin: 0; }
+
+/* ---------- 좁은 화면 ---------- */
+@media (max-width: 640px) {
+  .tr-run__ctl { width: 100%; }
+  .tr-ready { --rv-meter-label: 92px; --rv-meter-value: 72px; }
+}

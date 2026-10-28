@@ -56,6 +56,41 @@ For demos / data collection, use a real server instead of the dev server:
 
 ---
 
+## Dashboard screens
+
+Open http://localhost:5000 after `python run.py`. The UI follows high-performance HMI (ISA-101) principles:
+
+- Normal states are shown in neutral greys. Colour is used only for abnormal states and for controls.
+- Every state combines colour, a symbol (● ○ ■ ▲ ⓘ) and text.
+- The layout is designed for desktop screens (1280px and wider).
+
+| Screen | What it does |
+|---|---|
+| Overview | Station map, alerts, camera fps, arm joints, sync skew, data readiness, latest inspection capture |
+| Equipment | 3-axis conveyor (speed, direction, gate, LM position), teleoperation, homing, live camera feeds |
+| Collect | Demonstration recording sessions (for ACT), inspection-sample capture and labelling, episode management |
+| Train | Follows the LeRobot training log (loss, l1, kld, grdn, lr, throughput, GPU), demo curve |
+| Inspect | 5-camera capture → 3D shape and surface anomalies (orange), evidence and confidence, CAD reference |
+| Diagnostics | Runtime environment, serial port identification, camera settings, safety limits, rig calibration |
+
+- **Top bar**
+  - **Emergency stop** sits at the top right. It works even if Vue or the CDN fails to load.
+  - The auto-cycle start/stop controls and basket status are also here (see [Auto cycle](#auto-cycle--one-button--pick--carry--inspect--sort)).
+  - An alert chip opens a detail dialog: what is wrong, its impact, the cause and how to fix it.
+- **Frontend structure**
+  - Build-free Vue 3 (CDN, pinned version) plus static files under `frontend/static/ui/`.
+  - Each screen is one file, `js/screens/<name>.js`. Shared state and components live in `js/core/`.
+- **To try the UI without hardware**, use the isolated simulation server:
+
+  ```bash
+  python scripts/dev_sim.py --port 5100 --data .dev_data/demo
+  ```
+
+  - It refuses ports 5000 and 5001.
+  - It never touches the real `lerobot_data`, `calibration.json` or pick trajectory.
+
+---
+
 ## Why it is built this way
 
 ### Port identification — a 3-step fallback
@@ -162,28 +197,45 @@ for frame ordering.)
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/meta` | Camera order, defect types, next episode ID |
-| GET | `/api/status` | Combined recording / arm / teleop / camera status (main poll) |
+| GET | `/api/status` | Combined recording / arm / teleop / camera status (main poll). Includes `sync_skew_ms` (inter-camera skew in ms, null with fewer than 2 cameras), `demo` (demo session state) and `cycle` (auto cycle state) |
 | GET | `/api/ports` | Port + camera status snapshot |
 | POST | `/api/ports/refresh` | Clear overrides and rescan |
 | POST | `/api/ports/test` | Real open + ping verification |
 | POST | `/api/ports/identify/{start,confirm}` | Unplug-diff 2-phase |
+| GET | `/api/alerts[?refresh=1]` | Items a person should know about now (cause, impact and fix included; severity fault/warn/info). 5 s cache, `refresh=1` bypasses it |
+| GET | `/api/diagnostics[?refresh=1]` | Environment, serial port, camera setting and safety-limit (joint limits, max relative target, homing speed `homing_speed_deg_per_s`, …) diagnostics. 30 s cache, `refresh=1` bypasses it (live connection state is `/api/ports`) |
 | GET | `/api/stream/<name>?fps=&q=` | MJPEG stream |
 | GET | `/api/snapshot/<name>` | Single JPEG |
-| POST | `/api/recording/{start,stop}` | Collection control |
+| POST | `/api/recording/{start,stop}` | Collection control (`start` and `stop` return 409 during a demo session, `start` during an auto cycle — the session thread owns the recording, and a manual stop would lose the episode. Emergency stop is unaffected) |
+| POST | `/api/demo/start` | Start a demo recording session — body `object_id`, `task`, `episode_sec` (1–600), `reset_sec` (0–120). Teleop must be on, both arms connected, no recording or rollout running |
+| POST | `/api/demo/{next,redo,end}` | Save and go next / discard and redo (while recording only) / save and end the session. Progress is `demo` in `/api/status`. Demo episodes are stored with `kind=demo` + `task` and create no classification images |
 | GET | `/api/episodes` | List saved episodes (metadata.json) |
-| PATCH | `/api/episodes/<id>` | Edit label / object ID (moves the classification folder too) |
-| DELETE | `/api/episodes/<id>` | Delete episode (also cleans classification images if last reference) |
-| POST | `/api/emergency_stop` | Emergency stop — teleop + all belts + recording at once |
-| GET/POST | `/api/conveyor/status`, `/api/conveyor/<name>/{start,stop,speed,dir,release}` | Conveyor (multi-belt) control |
+| PATCH | `/api/episodes/<id>` | Edit label / object ID (moves the classification folder too; `kind=demo` episodes leave classification folders alone) |
+| DELETE | `/api/episodes/<id>` | Delete episode (also cleans classification images if last reference; demo episodes do not count as references) |
+| GET | `/api/inspections?limit=` | List 3D inspection captures (newest first) with a label summary. `capture_id` is `YYYYmmdd_HHMMSS`; a capture in the same second gets `_02`, `_03` … |
+| GET | `/api/inspections/<capture_id>/<cam>.jpg` | Original capture image |
+| POST | `/api/inspections/<capture_id>/label` | Save a capture label — written only to `inspections/<id>/label.json` (`classification/` is never touched) |
+| DELETE | `/api/inspections/<capture_id>` | Delete a capture (unlabeled only; 400 if labeled) |
+| GET | `/api/objects` | Object list (from episodes, labeled captures and CAD models) with the recommended pose count |
+| GET | `/api/readiness` | Data readiness (ACT episode count, good/defect object counts, goals) |
+| POST | `/api/emergency_stop` | Emergency stop — auto cycle + teleop + all belts + recording + demo session at once |
+| POST | `/api/emergency_reset` | Re-enable only the belt drivers the emergency stop switched off ('Enable drivers'; nothing moves). Connected belts only — a disconnected or released belt's port is not opened and is reported as `not_connected` |
+| GET/POST | `/api/conveyor/status`, `/api/conveyor/<name>/{start,stop,speed,dir,release}` | Conveyor (multi-belt) control (during an auto cycle, drive commands other than `stop` return 409) |
+| GET | `/api/cycle/status` | Auto cycle state — steps, progress message, verdict, basket counts and whether it can start (`ready`: blocking `reasons`, non-blocking `notes`). Same as the `cycle` key of `/api/status` |
+| POST | `/api/cycle/start` | Start one cycle (pick → belt carry → inspect → sort). 400 + the reason if it is not ready or already running. After the check passes it opens the belt port before the arm moves; 400 if it cannot |
+| POST | `/api/cycle/stop` | Abort at once — stops only the belt and the autorun (the gate and arm stay where they are). State becomes `aborted` |
+| POST | `/api/cycle/baskets/empty` | Reset the count to 0 after emptying a basket — body `{"basket": "good"}`, `"defect"` or `"all"` |
 | GET/POST | `/api/scan/model/<object_id>` | Query/upload CAD reference model (STL) |
-| POST | `/api/scan/background` | Capture empty-stage background (for background subtraction) |
-| POST | `/api/teleop/{start,stop}` | Teleoperation |
-| POST | `/api/arm/home` | Homing (rejected while recording) |
+| POST | `/api/scan/background` | Capture empty-stage background (for background subtraction; 409 during an auto cycle — the object on the belt would be baked into it) |
+| POST | `/api/scan/capture` | Capture one set now that the conveyor is still and give a 3D verdict — body `settle_sec` (0–3), `resolution` (16–96). 400 if not a number, 409 during an auto cycle. Captures go to `inspections/<capture_id>/` |
+| POST | `/api/teleop/{start,stop}` | Teleoperation (`start` returns 409 during an auto cycle) |
+| POST | `/api/arm/home` | Homing (rejected while recording or during an auto cycle) |
 | POST | `/api/train/{start,stop}` | ACT training control (demo/lerobot mode) |
 | GET | `/api/train/status` | Training status + metric time series (poll) |
 | GET | `/api/train/stream` | Training metrics SSE live stream |
+| GET | `/api/train/runs/latest` | Summary of the latest run in `logs/train` (`run: null` if none; does not start following it) |
 | GET | `/api/scan/objects` | List scannable objects that can be reconstructed |
-| POST | `/api/scan/reconstruct` | 5 views -> 3D mesh (visual hull) |
+| POST | `/api/scan/reconstruct` | 5 views -> 3D mesh (visual hull). The body is a stored object (`object_id`, `label`) or a stored inspection capture (`capture_id` — reads `inspections/<id>/<cam>.jpg` and rebuilds it the same way as `/api/scan/capture`). Compute-only, so it is allowed during an auto cycle |
 | POST | `/api/scan/reconstruct_demo` | Synthetic reconstruction for an instant check without data |
 
 Error responses all have the same shape:
@@ -202,8 +254,29 @@ dataset. Convert it once before training.
 
 ```bash
 python scripts/to_lerobot.py --repo-id omx/scan
-lerobot-train --dataset.repo_id=omx/scan --policy.type=act
+python scripts/train_act.py --repo-id omx/scan --steps 20000
 ```
+
+`scripts/train_act.py` is a wrapper that launches `lerobot-train` as a child process (it adds
+`--policy.type=act`, the required `--policy.repo_id` and `--policy.push_to_hub=false` for you).
+Training arguments the wrapper does not know go after `--`
+(`... --repo-id omx/scan -- --policy.device=cuda --save_freq=5000`). `--log-freq` (default 50) is
+passed to lerobot explicitly and is the point spacing of the dashboard curve. For every run the
+wrapper writes, under `logs/train/<YYYYmmdd_HHMMSS>/`: `run.json` (arguments, status
+RUNNING/DONE/FAILED, returncode, output_dir), `train.log` (raw lerobot output), `metrics.jsonl`
+(parsed metrics), `gpu.jsonl` (GPU state, below) and `heartbeat` (an empty file whose modification
+time is refreshed every 10 s — the server's evidence that the wrapper is alive, below), and it
+echoes everything to the console. A run started in the same second gets a `_02`, `_03` … suffix on
+its folder name (two digits, so name order = time order). To stop training, press Ctrl+C in the
+terminal that launched the wrapper. The schema and the log parser live in
+`backend/core/train_log.py`. Without lerobot the wrapper prints install instructions and fails
+immediately.
+
+While training runs, the wrapper samples `nvidia-smi` every 5 s into `gpu.jsonl` (as a child
+process, without torch), and the LEROBOT-mode dashboard shows the recent summary (about 30 s) as a
+'GPU' card. If `nvidia-smi` is missing it says so once and stops sampling right away; a transient
+failure is retried on the next cycle, and 5 consecutive failures stop it. Either way training
+keeps running.
 
 The crux of the conversion is the observation/action mapping.
 
@@ -239,10 +312,27 @@ threshold. If any single joint is far off, that motion is realistically a failur
 **DEMO mode** reproduces a real training curve (exponential loss decay + rising success)
 without a GPU or dataset, so you can check the dashboard immediately. Even then the values
 pass through the real `compute_metrics()`, so the chart logic is validated identically to
-production. Selecting **LEROBOT mode** points you to running real training as a separate
-process — convert with `scripts/to_lerobot.py`, then use the `lerobot-train` CLI (see
-"Real ACT training" above). There is no reason to run GPU training inside a server that
-holds 5 cameras and the serial ports.
+production. **LEROBOT mode** does not start training: it follows the latest `logs/train/*` run
+left by `scripts/train_act.py` (see "Real ACT training" above) and draws the real loss curve on
+the same chart (`LeRobotTrainer`, 0.5 s polling). There is no reason to run GPU training inside a
+server that holds 5 cameras and the serial ports, so training stays outside the server and
+survives a server restart. With no run on record it shows how to use the wrapper and ends as
+FAILED.
+
+What changes in LEROBOT mode:
+- The x-axis is **STEP**, not EPOCH. The `step:1K` in lerobot logs is lossy (1000, 1200 and 1400
+  all print `1K`), so the parsed value is not used; the step is restored as 'n-th metrics line ×
+  log_freq'. A run resumed with `--resume` is offset in x by the checkpoint step.
+- lerobot does not log val MAE or success rate, so those KPIs/charts show '—' or are hidden. VAL
+  loss is drawn only where a `step N: eval_loss=…` line exists. An eval line for the same step
+  attaches to that step's point (arriving twice still gives one point); a step without a metrics
+  line becomes a separate point — the previous train loss is carried over, and an eval line that
+  arrives before the first metrics line is kept with an empty train loss. So the same step never
+  appears twice on the x-axis.
+- **STOP only stops 'following'**; it does not kill the training process (the server is not the
+  training's parent). If the wrapper is force-killed, `run.json` stays RUNNING, but once the
+  heartbeat file has been still for more than 60 s the server treats the run as FAILED (an old
+  run without a heartbeat is ended with STOP).
 
 The live feed uses **SSE** (Server-Sent Events). Polling always lags by the interval, but
 with SSE the chart grows the moment an epoch ends.
@@ -425,6 +515,84 @@ orbit control is implemented directly instead of OrbitControls to reduce depende
 
 > **Check immediately without data**: press the **DEMO** button in the 3D SCAN INSPECTION
 > section to see a synthetic shape + orange highlight without cameras or an object.
+
+---
+
+## Auto cycle — one button = pick → carry → inspect → sort
+
+One press of [▶ Start cycle] in the top bar runs one cycle (flowchart 3.1 of the build report). A
+server thread goes through the steps below; progress is polled from the `cycle` key of
+`/api/status` (or `GET /api/cycle/status`). Implementation: `backend/core/cycle.py`.
+
+1. **Pick** — With the gate at its closed angle and the belt direction/speed set, a waypoint replay
+   (the same autorun as `/api/rollout/start`) picks the object and puts it on the belt. Fails if it
+   does not finish within `pick_timeout_sec`, or on a fault. When the trajectory ends it waits
+   another `pick_settle_sec` (default 1 s) before moving on to the carry step — so the belt does
+   not move before the gripper has finished releasing the object (tune it on site).
+2. **Carry** — Runs the belt for `to_scan_sec`, then stops it.
+3. **Inspect** — Uses the same function as `/api/scan/capture` (`run_scan_capture`): check that the
+   belt is still → capture → 3D verdict. The captures go to `inspections/<capture_id>/`. If
+   capturing fails, the cycle fails too.
+4. **Sort** — Good: run the belt for `good_run_sec`, then stop. Defect: run it for
+   `defect_to_branch_sec`, stop, open the gate, wait `gate_hold_sec`, then close it. After that the
+   matching basket count goes up by 1.
+
+Verdict: `stats.quality.level == "low"` is a defect (an object that cannot be judged is never sent
+to the good line); `anomaly.flagged_ratio >= defect_ratio` is a defect; anything else is good.
+
+**Making the pick waypoints (once)**
+
+1. In Equipment Control turn teleop on and record a "pick it up and put it on the belt"
+   demonstration as one episode. Start from a rest pose and return to it — there is no homing
+   between cycles, so the next cycle starts from the pose the last one ended in.
+2. `python scripts/to_waypoints.py --episode <ID> --out lerobot_data/waypoints/pick_place.json`
+3. Make `cycle.pick_waypoints` in `config.yaml` point at that file (the default is the path above).
+   The other values in the same `cycle:` section — the wait after picking (`pick_settle_sec`,
+   0–60 s), belt times and speed, gate angles, verdict threshold, basket capacity — are all starting
+   points; every line is marked 'measure on site'. A bad value (out of range, not a number) is
+   rejected as soon as the server starts.
+
+**Safety rules**
+
+- If the pre-start check (`ready`) trips on anything, the cycle does not start and gives the reasons
+  (`reasons`): the pick motion file (paths inside the repo are shown relative to the repo), the cycle
+  belt being in the config with a port set, its driver being enabled and the belt standing still,
+  the follower being connected, at least 2 cameras for reconstruction, no teleop / rollout /
+  recording / demo running, and basket room. Setting `pick_checkpoint` (ACT) refuses the start — it
+  has no completion signal, so picking always ends in a timeout (use waypoints; the check blocks it
+  rather than config validation, so the server still starts).
+  - On real hardware the belt port is closed right after the server starts (it opens on the first
+    command). `ready` neither opens the port nor blocks on it — it only adds a line to `notes`
+    ('starting will open the belt port'). After the check passes, `POST /api/cycle/start` opens the
+    port **before the arm moves**; if it cannot, it returns 400 with the reason and the arm does not
+    move.
+  - An emergency stop turns the belt driver off (DISABLE). Because the firmware's START turns it back
+    on, after an emergency stop a person must release it explicitly with 'Enable drivers' in
+    Equipment Control (`POST /api/emergency_reset`) before a cycle can start. A driver that was
+    switched off while the port was closed is checked after the start opens the port, and refused
+    for the same reason.
+- While a cycle runs, the server rejects with 409 (`cycle_busy`): starting teleop / rollout /
+  recording / demo, manual captures (`/api/scan/capture`, `background`, `calibrate/shot`), belt drive
+  commands (start, speed, dir, move, servo, zero, end, release) and homing. A background captured
+  mid-cycle would bake the object on the belt into the background and ruin every later verdict.
+  Compute-only endpoints (`reconstruct`, `calibrate/solve`) are not blocked. Belt `stop`, emergency
+  stop and `/api/cycle/stop` always work. **If a person stops any belt or releases its driver, the
+  cycle stops too** (so the cycle never restarts a belt a person has just stopped). The three axes
+  share the servo gate and the COM port, so manual operation during a cycle is blocked
+  conservatively across the board, and stopping even another belt stops the cycle.
+- On an abort or error only the belt and the autorun are stopped (belt first — stopping the autorun
+  may have to wait for the hub lock). The gate and arm stay where they stopped (the gate returns to
+  its closed angle when the next cycle starts). An emergency stop cuts the cycle first, waits
+  briefly (up to 1 s) for a belt command that has already gone out, and only then stops and
+  disables the belts — so a START that already passed its check cannot slip in after DISABLE and
+  re-enable the driver. The autorun start, which moves the arm, re-checks abort / server shutdown
+  inside the hub's own lock and does not start once a stop has finished. After a server shutdown has
+  closed a belt port, it is not reopened. Every wait is an `Event.wait`, so a stop takes effect even
+  mid-wait.
+- When a basket is full (`basket_capacity`) the cycle does not start. After emptying it, pressing
+  [Emptied] (`POST /api/cycle/baskets/empty`) sets the count back to 0. Counts live only in server
+  memory, so they are 0 after a restart.
+- **The first time, lower `pick_speed` and watch from next to the robot.**
 
 ---
 

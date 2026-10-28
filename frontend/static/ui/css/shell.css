@@ -1,0 +1,232 @@
+/* =============================================================
+   셸 — 사이드바, 상단바, 비상 정지 자리, 반응형 메뉴 패널, 연결 끊김 배너, 알림 상세 창 내용.
+   화면 본문(.rv-main 안)은 각 화면 CSS 가 맡는다.
+   ============================================================= */
+
+/* Vue 가 마운트되기 전(또는 CDN 이 막혀 영영 안 될 때) 보이는 안내 */
+.rv-boot { padding: 28px var(--gutter); color: var(--ink-2); }
+
+/* ---------- 비상 정지: Vue 밖 정적 HTML. 항상 상단바 오른쪽 끝에 떠 있다 ---------- */
+.rv-estop {
+  position: fixed;
+  z-index: 30;
+  top: calc((var(--topbar-h) - 44px) / 2);
+  right: var(--gutter);
+  width: var(--estop-w);
+  padding: 0;
+}
+.rv-estop[data-state="busy"] { opacity: 0.7; cursor: progress; }
+.rv-estop-msg {
+  position: fixed;
+  z-index: 31;
+  top: calc(var(--topbar-h) + 8px);
+  right: var(--gutter);
+  max-width: min(360px, calc(100vw - 2 * var(--gutter)));
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+  font-weight: 600;
+}
+/* 비어 있어도 aria-live 영역은 접근성 트리에 남겨야 해서 display:none 을 쓰지 않는다 */
+.rv-estop-msg:empty { width: 0; height: 0; padding: 0; overflow: hidden; opacity: 0; box-shadow: none; pointer-events: none; }
+.rv-estop-msg[data-kind="fail"] { color: var(--danger); }
+.rv-estop-msg[data-kind="fail"]::before { content: '■ '; }
+
+/* ---------- 레이아웃 ---------- */
+.rv-layout { display: flex; align-items: flex-start; min-height: 100vh; }
+.rv-content { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; min-height: 100vh; }
+/* 폭 상한 없음 — HMI 는 전체화면(1920 이상)에서도 화면을 다 채운다. 줄 길이는 각 카드·그리드가 정한다 */
+.rv-main { width: 100%; padding: 28px var(--gutter) 56px; }
+
+/* ---------- 사이드바 ---------- */
+.rv-sidebar {
+  position: sticky;
+  top: 0;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: var(--sidebar-w);
+  height: 100vh;
+  padding: 20px 12px;
+  overflow-y: auto;
+  background: var(--sidebar);
+  border-right: 1px solid var(--line);
+}
+.rv-brand { padding: 0 10px; }
+.rv-brand__name { font-size: var(--fs-h3); line-height: var(--lh-h3); font-weight: 700; }
+.rv-brand__sub { font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+.rv-sidebar__here { display: none; flex-direction: column; align-items: flex-start; gap: 8px; padding: 0 10px; }
+.rv-nav { display: flex; flex-direction: column; gap: 16px; }
+.rv-nav__group { display: flex; flex-direction: column; gap: 2px; }
+.rv-nav__title { padding: 0 10px 4px; font-size: var(--fs-cap); line-height: var(--lh-cap); font-weight: 600; color: var(--ink-2); }
+.rv-nav__link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 10px;
+  border-radius: var(--r-ctl);
+  color: var(--ink);
+  font-weight: 500;
+}
+.rv-nav__link:hover { color: var(--ink); }
+.rv-nav__link:hover:not([aria-current="page"]) { background: var(--bg); }
+.rv-nav__link[aria-current="page"] { background: var(--line); font-weight: 600; }
+.rv-nav__icon { flex: none; width: 20px; height: 20px; fill: none; stroke: var(--ink-2); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.rv-nav__icon .rv-nav__fill { fill: var(--ink-2); stroke: none; }
+.rv-nav__icon .rv-nav__knob { fill: var(--sidebar); }
+.rv-nav__link[aria-current="page"] .rv-nav__icon { stroke: var(--link); }
+.rv-nav__link[aria-current="page"] .rv-nav__icon .rv-nav__fill { fill: var(--link); }
+.rv-nav__link[aria-current="page"] .rv-nav__icon .rv-nav__knob { fill: var(--line); }
+.rv-nav__rec { margin-left: auto; }
+.rv-sidebar__foot {
+  margin-top: auto;
+  padding: 12px 10px 0;
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+  color: var(--ink-2);
+}
+
+/* ---------- 상단바: 비상 정지 자리(--estop-w)를 오른쪽에 비워 둔다 ---------- */
+.rv-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 10px 12px;
+  height: var(--topbar-h);
+  padding: 0 calc(var(--gutter) + var(--estop-w) + 12px) 0 var(--gutter);
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+.rv-menu-btn { display: none; }
+.rv-crumb { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+.rv-topbar__chips { display: flex; align-items: center; gap: 8px 12px; min-width: 0; }
+.rv-alertchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 19px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.rv-alertchip:hover { color: var(--ink); border-color: var(--line-2); }
+.rv-alertchip__item { display: inline-flex; align-items: center; gap: 6px; }
+.rv-alertchip__sep { color: var(--disabled); }
+.rv-chip--rec { min-height: 32px; font-variant-numeric: tabular-nums; }
+/* 상단바 알림 칩이 가리키는 개요의 알림 카드(id="rv-alerts")가 sticky 상단바에 가리지 않게 */
+#rv-alerts { scroll-margin-top: calc(var(--topbar-h) + 16px); }
+
+/* ---------- 자동 사이클 위젯: 칩 묶음 뒤, 비상 정지 자리 앞. 폭이 모자라면 크롬(crumb) → 위젯 글줄 순으로 줄어든다 ---------- */
+.rv-topbar__chips { flex: none; }
+.rv-cyc { display: flex; align-items: center; flex: 0 1 auto; gap: 10px; min-width: 0; }
+.rv-cyc__btn { flex: none; padding: 0 18px; }
+.rv-cyc__btn:disabled { background: var(--line); }   /* 기본 비활성 바탕(--bg)이 상단바 바탕과 같아 알약 모양이 사라진다 */
+.rv-cyc__act { flex: none; }
+.rv-cyc__ico { width: 12px; height: 12px; fill: currentColor; }
+.rv-cyc__info { display: flex; flex-direction: column; justify-content: center; min-width: 0; max-width: 300px; }
+.rv-cyc__l1, .rv-cyc__l2 {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+}
+.rv-cyc__l1 { font-weight: 600; }
+.rv-cyc__l2 { color: var(--ink-2); }
+.rv-cyc__l2--warn { color: var(--warn); font-weight: 600; }
+.rv-cyc__l1 .rv-status, .rv-cyc__l2 .rv-status { max-width: 100%; }
+.rv-cyc__l1 .rv-status__label, .rv-cyc__l2 .rv-status__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-cyc__steps { display: flex; align-items: center; gap: 6px; overflow: hidden; white-space: nowrap; font-size: var(--fs-small); line-height: var(--lh-small); }
+.rv-cyc__step { display: inline-flex; align-items: center; gap: 4px; color: var(--ink-2); font-weight: 500; }
+.rv-cyc__step--done { color: var(--ink); }
+.rv-cyc__step--active { color: var(--ink); font-weight: 700; }
+.rv-cyc__step--failed { color: var(--warn); font-weight: 700; }
+.rv-cyc__arrow { color: var(--disabled); }
+.rv-cyc__done { flex: none; width: 12px; height: 12px; fill: none; stroke: var(--ink); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ---------- 서버 연결 끊김 배너 ---------- */
+.rv-banner {
+  position: sticky;
+  top: var(--topbar-h);
+  z-index: 15;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 10px var(--gutter);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+  line-height: 19px;
+}
+.rv-banner__title { font-weight: 700; }
+
+/* ---------- 알림 상세 창 내용 ---------- */
+.rv-alert__grade { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.rv-alert__grade .rv-status__label { font-size: 14px; line-height: 20px; font-weight: 700; }
+.rv-alert__grade .rv-status--warn .rv-status__label { color: var(--warn); }
+.rv-alert__grade .rv-status--fault .rv-status__label { color: var(--danger); }
+.rv-alert__grade .rv-status--info .rv-status__label { color: var(--ink-2); }
+.rv-alert__meta { font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.rv-alert__secs { display: flex; flex-direction: column; gap: 20px; }
+.rv-alert__sec h3 { margin-bottom: 6px; font-size: var(--fs-body); line-height: var(--lh-body); }
+.rv-alert__sec p { line-height: 22px; }
+.rv-alert__note { font-size: 14px; line-height: 20px; color: var(--ink-2); }
+.rv-alert__ev { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px; font-size: var(--fs-small); line-height: var(--lh-small); }
+.rv-alert__ev dt { color: var(--ink-2); font-weight: 600; }
+.rv-alert__ev code { display: block; white-space: pre-wrap; }
+
+/* ---------- 확인 창(store.askConfirm) — 문구의 줄바꿈을 그대로 보인다 ---------- */
+.rv-confirm__msg { white-space: pre-line; line-height: 22px; }
+
+/* ---------- 640px 이하: 한 줄 상단바 [메뉴][알림 칩][녹화][비상 정지] + 메뉴 패널 ---------- */
+@media (max-width: 640px) {
+  .rv-layout { display: block; }
+  .rv-sidebar {
+    position: fixed;
+    top: var(--topbar-h);
+    left: 0;
+    right: 0;
+    z-index: 19;
+    display: none;
+    width: auto;
+    height: auto;
+    max-height: calc(100dvh - var(--topbar-h));
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    box-shadow: var(--shadow-pop);
+  }
+  .rv-sidebar[data-open="true"] { display: flex; }
+  .rv-brand { display: none; }
+  .rv-sidebar__here { display: flex; }
+  .rv-sidebar__sim { display: none; }   /* 패널 맨 위의 칩과 겹친다 */
+  .rv-cyc { display: none; }            /* 모바일 화면은 지원하지 않는다 — 한 줄 상단바가 넘치지 않게만 */
+  .rv-menu-btn { display: inline-flex; color: var(--ink); }
+  .rv-crumb, .rv-topbar .rv-chip--sim { display: none; }
+  .rv-topbar { gap: 8px; padding-right: calc(var(--gutter) + var(--estop-w) + 8px); }
+  .rv-alertchip { padding: 0 12px; gap: 6px; }
+  /* 좁은 폭에서는 칩의 단어('주의 ')를 화면에서만 뺀다 — 기호와 숫자는 남고 스크린리더는 읽는다 */
+  .rv-alertchip__word {
+    position: absolute;
+    width: 1px; height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+  .rv-main { padding-top: 20px; }
+}

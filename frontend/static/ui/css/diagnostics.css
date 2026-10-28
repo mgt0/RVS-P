@@ -1,0 +1,81 @@
+/* =============================================================
+   진단 화면 (#/diagnostics) — 접두어 dg-
+   공용 클래스(rv-card, rv-table, rv-steps, rv-state …)는 base.css. 여기는 이 화면에만 있는 것.
+   색·크기는 tokens.css 의 변수만, letter-spacing·text-transform 은 쓰지 않는다.
+   ============================================================= */
+
+.dg-screen { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
+.dg-screen h3 { font-size: var(--fs-body); line-height: var(--lh-body); font-weight: 600; }
+
+.dg-warn { color: var(--warn); }
+.dg-nowrap { white-space: nowrap; }
+
+.dg-card-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; }
+.dg-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ---------- 실행 환경 ---------- */
+.dg-env { display: flex; flex-direction: column; }
+.dg-env__row { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+.dg-env__title { font-weight: 600; }
+.dg-env__text { min-width: 0; }
+.dg-env__text > * + * { margin-top: 2px; }
+
+/* ---------- 표: 칸이 눌려 글자가 세로로 쪼개지지 않게 최소 폭을 주고, 넘치면 표 안에서만 가로로 넘긴다 ---------- */
+.dg-table--port { min-width: 720px; }
+.dg-table--cam { min-width: 900px; }
+.dg-table--joint { max-width: 640px; }   /* 숫자 4칸이 화면 끝까지 퍼지면 행을 눈으로 따라가기 어렵다 */
+.dg-table--cal th .rv-small { font-weight: 400; }
+
+/* ---------- 연결 시험 결과 ---------- */
+.dg-test { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--line); }
+.dg-test__list { display: flex; flex-direction: column; }
+.dg-test__row { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+.dg-test__row:first-child { border-top: 0; }
+.dg-test__name { font-weight: 500; }
+
+/* ---------- 카메라 ROI 미리보기: 4:3 화면 안에서 3D 실루엣을 뽑는 영역 ---------- */
+.dg-roi-cell { display: flex; align-items: center; gap: 10px; }
+.dg-roi { flex: none; width: 40px; height: 30px; }
+.dg-roi__frame { fill: var(--bg); stroke: var(--line-2); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.dg-roi__box { fill: none; stroke: var(--ink); stroke-width: 1.5; stroke-dasharray: 3 2; vector-effect: non-scaling-stroke; }
+
+/* ---------- 안전 한계 ---------- */
+.dg-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 16px 24px; margin: 0; }
+.dg-facts + h3 { margin-top: 8px; }
+.dg-facts > div { min-width: 0; }
+.dg-facts dt { font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+.dg-facts dd { margin: 2px 0 0; font-size: var(--fs-h2); line-height: var(--lh-h2); font-weight: 700; }
+.dg-key { display: block; font-size: var(--fs-cap); line-height: var(--lh-cap); font-weight: 400; }
+
+/* ---------- 리그 캘리브레이션 ---------- */
+.dg-cal { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 24px 40px; }
+.dg-cal__main, .dg-cal__result { flex: 1 1 min(380px, 100%); min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.dg-cal__state { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.dg-cal__stext { font-weight: 600; }
+.dg-cal__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+@media (max-width: 640px) {
+  /* 좁은 화면: 열이 많은 표는 행을 카드로 쌓는다. 상태·'포트 식별' 버튼이 가로 스크롤 밖으로 밀리지 않게.
+     머리 행은 화면에서만 숨기고(읽기 도구는 그대로 읽는다) 칸 이름은 data-label 로 앞에 붙인다. */
+  .dg-table--stack { min-width: 0; }
+  .dg-table--stack, .dg-table--stack tbody, .dg-table--stack tr, .dg-table--stack th, .dg-table--stack td { display: block; }
+  .dg-table--stack thead { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .dg-table--stack tbody tr { padding: 12px 0; }
+  .dg-table--stack tbody th { padding: 0 0 6px; font-weight: 600; }
+  .dg-table--stack tbody td { padding: 4px 0; }
+  .dg-table--stack td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: var(--fs-cap);
+    line-height: var(--lh-cap);
+    font-weight: 600;
+    color: var(--ink-2);
+  }
+  .dg-table--stack .dg-nowrap { white-space: normal; }
+  .dg-table--stack .dg-na { display: none; }   /* 라벨 없는 '해당 없음' 줄표는 카드에서 떠 보인다 */
+
+  .dg-screen { gap: 16px; }
+  .dg-screen .rv-card { padding: 16px; }
+  .dg-env__row, .dg-test__row { grid-template-columns: 76px minmax(0, 1fr); gap: 8px; }
+  .dg-actions .rv-btn { flex: 1 1 auto; }
+}

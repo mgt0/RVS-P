@@ -1,0 +1,65 @@
+/* =============================================================
+   RVS-P 디자인 토큰 — 색·글꼴·크기는 여기서만 정한다.
+   초안 Foundations 보드의 값 그대로이며, 이 밖의 색은 쓰지 않는다.
+   letter-spacing 은 어디서도 선언하지 않는다(한글에 자간을 주면 글자가 흩어진다).
+   ============================================================= */
+
+:root {
+  /* 다크 대응값을 정의하지 않았으므로 OS 다크 모드에서 UA 기본색이 섞이지 않게 라이트로 고정 */
+  color-scheme: light;
+
+  /* ---------- 색: 정상은 무채색, 색은 의미에만 ---------- */
+  --bg: #F2F2F7;          /* 화면 바탕 */
+  --surface: #FFFFFF;     /* 카드 면 */
+  --sidebar: #FAFAFC;     /* 사이드바 면 */
+  --ink: #1D1D1F;         /* 본문 글자, 지시계 바늘 */
+  --ink-2: #6E6E73;       /* 보조 글자, 진행 막대 */
+  --line: #E5E5EA;        /* 구분선, 보조 버튼 바탕 */
+  --line-2: #D1D1D6;      /* 지시계 정상 범위 음영 */
+  --ctl-border: #86868B;  /* 입력 테두리, 꺼진 스위치 테두리 */
+  --disabled: #AEAEB2;    /* 장식 전용(글자 금지) */
+  --link: #0071E3;        /* 버튼·링크·선택 표시만 */
+  --link-hover: #0058B0;
+  --warn: #C55300;        /* 불량·이상·경고 기호와 글자 */
+  --mesh: #FF8D28;        /* 3D 형상의 이상 강조(그래픽 전용) */
+  --danger: #D91A2A;      /* 비상 정지·고장만 */
+
+  /* 레거시 scan_viewer.js 가 getComputedStyle 로 읽는 이름(scan_viewer.js:23, :150) */
+  --canvas-soft: #E5E5EA;
+  --hairline: #D1D1D6;
+
+  /* ---------- 모양 ---------- */
+  --r-card: 16px;
+  --r-ctl: 10px;
+  --r-pill: 999px;
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.12);   /* 메뉴, 대화상자 */
+  --shadow-knob: 0 1px 3px rgba(0, 0, 0, 0.25);   /* 스위치 손잡이 */
+  --shadow-seg: 0 1px 3px rgba(0, 0, 0, 0.12);    /* 선택된 세그먼트 */
+  --scrim: rgba(0, 0, 0, 0.32);                   /* 대화상자 뒤 배경 */
+
+  /* ---------- 글꼴 ---------- */
+  --font: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Malgun Gothic', 'Segoe UI', sans-serif;
+  --font-code: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* 글자 크기 / 줄 높이 (굵기는 base.css 의 클래스가 정한다) */
+  --fs-display: 34px; --lh-display: 41px;   /* 화면 제목 h1, 700 */
+  --fs-h2: 22px;      --lh-h2: 28px;        /* 섹션 제목, 700 */
+  --fs-h3: 17px;      --lh-h3: 22px;        /* 카드 제목, 600 */
+  --fs-body: 15px;    --lh-body: 20px;      /* 본문, 400 */
+  --fs-small: 13px;   --lh-small: 18px;     /* 보조, 400 */
+  --fs-cap: 12px;     --lh-cap: 16px;       /* 캡션, 600 */
+  --fs-num: 28px;     --lh-num: 34px;       /* 큰 숫자, 700, tabular-nums */
+
+  /* ---------- 레이아웃 ---------- */
+  --sidebar-w: 220px;
+  --topbar-h: 64px;
+  --gutter: 32px;
+  --estop-w: 124px;       /* 상단바 비상 정지 버튼 폭 — 상단바가 이만큼 비워 둔다 */
+}
+
+@media (max-width: 640px) {
+  :root {
+    --gutter: 16px;
+    --estop-w: 112px;
+  }
+}

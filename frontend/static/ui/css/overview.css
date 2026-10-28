@@ -1,0 +1,155 @@
+/* =============================================================
+   개요 화면 — 접두어 ov-. 색·크기는 tokens.css 변수만 쓴다.
+   letter-spacing·text-transform 은 쓰지 않는다.
+   ============================================================= */
+
+.ov-screen { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+
+/* ---------- 상태 배너 ---------- */
+.ov-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 20px;
+  padding: 24px 28px;
+  border-radius: var(--r-card);
+  background: var(--surface);
+}
+.ov-banner__icon { flex: none; width: 44px; height: 44px; }
+.ov-ic-line { fill: none; stroke: var(--ink); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.ov-ic-wait { fill: none; stroke: var(--ink-2); stroke-width: 2.5; stroke-dasharray: 4 5; }
+.ov-ic-warn { fill: var(--warn); }
+.ov-ic-fault { fill: var(--danger); }
+.ov-banner__main { flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.ov-banner__title { font-size: var(--fs-num); line-height: var(--lh-num); font-weight: 700; }
+.ov-banner__sub, .ov-banner__meta { color: var(--ink-2); }
+.ov-states { display: flex; flex-wrap: wrap; gap: 4px 20px; margin-top: 8px; font-size: 14px; line-height: 19px; }
+.ov-states li { display: flex; align-items: center; min-height: 24px; }
+
+/* ---------- 지도 + 알림 한 줄 ---------- */
+.ov-row { display: flex; flex-wrap: wrap; gap: 20px; align-items: stretch; }
+/* flex-basis 640px: 1280 노트북에서도 지도 카드가 650 안팎이라 SVG 글자가 읽힌다. 뷰포트가 아니라 카드 폭 기준으로 목록으로 바꾸려고 컨테이너 쿼리를 쓴다 */
+.ov-map { flex: 2 1 640px; container: ov-map / inline-size; }
+.ov-alerts { flex: 1 1 300px; gap: 4px; }
+.ov-alerts .rv-card__head { margin-bottom: 8px; }
+
+/* 리그 지도 SVG (viewBox 760 폭) */
+/* 상한 960: 넓은 화면에서 viewBox 비례로 SVG 글자가 다른 카드보다 커지지 않게(최대 약 1.26배) */
+.ov-map__svg { width: 100%; max-width: 960px; height: auto; margin-inline: auto; }
+.ov-map__svg text { font-family: var(--font); }
+.ov-m-belt, .ov-m-rail { fill: var(--bg); stroke: var(--line-2); }
+.ov-m-zone { fill: none; stroke: var(--ink-2); stroke-dasharray: 5 5; }
+.ov-m-cube { fill: var(--surface); stroke: var(--ink); stroke-width: 1.6; }
+.ov-m-ray { stroke: var(--line-2); }
+.ov-m-ring { fill: none; stroke: var(--disabled); stroke-dasharray: 3 4; }
+.ov-m-arm { fill: var(--surface); stroke: var(--ink); stroke-width: 1.6; }
+.ov-m-link { stroke: var(--disabled); stroke-dasharray: 2 4; }
+.ov-m-carriage { fill: var(--ink); }
+.ov-t { fill: var(--ink); font-size: 15px; }
+.ov-t2 { fill: var(--ink-2); font-size: 13px; }
+.ov-t--warn { fill: var(--warn); font-weight: 600; }
+/* <use> 안의 도형은 칠을 상속한다 — 상태 기호는 rv-status 와 같은 약속(● ○ ▲ ■) */
+.ov-sym--run { fill: var(--ink); stroke: none; }
+.ov-sym--stop { fill: none; stroke: var(--ink); stroke-width: 1.5; }
+.ov-sym--warn { fill: var(--warn); stroke: none; }
+.ov-sym--fault { fill: var(--danger); stroke: none; }
+
+/* 좁을 때는 같은 정보를 목록으로. 글자가 6~8px 로 줄어드는 지도는 읽을 수 없다 */
+.ov-maplist { display: none; flex-direction: column; gap: 14px; }
+.ov-maplist__h { font-size: var(--fs-cap); line-height: var(--lh-cap); font-weight: 600; color: var(--ink-2); }
+.ov-maplist__row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 2px 12px;
+  min-height: 44px;
+  border-top: 1px solid var(--line);
+}
+.ov-maplist__name { font-weight: 500; }
+@container ov-map (max-width: 560px) {
+  .ov-map__svg { display: none; }
+  .ov-maplist { display: flex; }
+}
+@media (max-width: 640px) {
+  .ov-map__svg { display: none; }
+  .ov-maplist { display: flex; }
+}
+
+.ov-ports { display: flex; flex-wrap: wrap; align-items: center; gap: 0 14px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 14px; line-height: 19px; min-height: 44px; }
+.ov-ports__down { color: var(--ink-2); }
+
+/* ---------- 알림 목록 ---------- */
+.ov-alerts__list { display: flex; flex-direction: column; }
+.ov-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  margin: 0;
+  padding: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+.ov-alert__sev { flex: none; margin-top: 1px; }
+.ov-alert__body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ov-alert__top { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.ov-alert__title { font-weight: 600; }
+.ov-alert__sum { font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+.ov-alert__more { flex: none; align-self: center; font-size: 14px; line-height: 19px; font-weight: 600; color: var(--link); white-space: nowrap; }
+.ov-alert:hover .ov-alert__more { color: var(--link-hover); }
+.ov-alerts__foot { margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+
+/* ---------- 지시계 카드 3개 ---------- */
+.ov-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 20px; }
+/* 1280 노트북에서 카드 폭이 320 안팎이라 이름·값 칸을 줄여 막대 길이를 확보한다 */
+.ov-cams { --rv-gauge-label: 100px; --rv-gauge-value: 72px; }
+.ov-joints { --rv-gauge-label: 108px; }   /* '관절 6 · 그리퍼' 가 잘리지 않는 폭 */
+.ov-list { display: flex; flex-direction: column; gap: 12px; }
+.ov-off { display: grid; grid-template-columns: 100px minmax(0, 1fr); align-items: center; gap: 4px 12px; font-size: 14px; line-height: 19px; }
+.ov-off__state { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; min-width: 0; }
+
+.ov-sync { gap: 16px; }
+.ov-block { display: flex; flex-direction: column; gap: 8px; }
+.ov-block + .ov-block { padding-top: 16px; border-top: 1px solid var(--line); }
+.ov-block__row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 14px; }
+.ov-big { font-size: var(--fs-h2); line-height: var(--lh-h2); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ov-big__unit { font-size: 14px; font-weight: 500; color: var(--ink-2); }
+.ov-ready { --rv-meter-label: 104px; gap: 10px; }
+.ov-ready__go { align-self: flex-start; }
+
+/* ---------- 최근 검사 촬영 ---------- */
+/* 기본 a:hover 파랑(specificity 0,2,1)을 이기려고 a. 를 붙인다 */
+a.ov-cap__link, a.ov-cap__link:hover { color: var(--ink); }
+.ov-cap__link {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: -10px;
+  padding: 10px;
+  border-radius: 12px;
+}
+.ov-cap__link:hover { background: var(--bg); }
+.ov-cap__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.ov-cap__open { margin-left: auto; font-weight: 600; color: var(--link); white-space: nowrap; }
+/* 카메라 5장이 한 줄을 균등하게 나눠 갖는다(칸 최대 220px). 좁으면 칸 140px 기준으로 줄바꿈 */
+.ov-cap__thumbs { display: flex; flex-wrap: wrap; gap: 10px; }
+.ov-cap__fig { flex: 1 1 140px; max-width: 220px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ov-cap__img, .ov-cap__miss {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 8px;
+  background: var(--line);
+  object-fit: cover;
+}
+.ov-cap__miss { display: flex; align-items: center; justify-content: center; font-size: var(--fs-small); color: var(--ink-2); }
+.ov-cap__cam { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 640px) {
+  .ov-banner { padding: 20px 16px; }
+  .ov-banner .rv-btn { width: 100%; }
+}

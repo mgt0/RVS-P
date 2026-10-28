@@ -1,0 +1,148 @@
+/* =============================================================
+   검사 화면(in-). 색·글꼴은 tokens.css 변수만 쓴다. letter-spacing·text-transform 선언 없음.
+   본문 폭·여백은 셸(.rv-main)이 정하므로 여기서는 세로 흐름만 잡는다.
+   ============================================================= */
+
+.in-screen { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
+
+/* ---------- 동작 행 ---------- */
+.in-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.in-pick { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.in-pick select { min-width: 200px; max-width: 100%; }
+.in-auto { margin-left: auto; padding: 0 8px 0 16px; border-radius: var(--r-pill); background: var(--surface); }
+
+/* ---------- 상태 줄(캘리브레이션·배경·자동 촬영) ---------- */
+.in-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 28px;
+  font-size: var(--fs-small);
+  line-height: var(--lh-small);
+  color: var(--ink-2);
+}
+.in-meta__item { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; }
+.in-meta__link { display: inline-flex; align-items: center; min-height: 44px; font-weight: 600; }
+
+/* ---------- 오류 카드 ---------- */
+.in-fail { gap: 10px; }
+.in-fail .rv-status__label { font-size: var(--fs-body); line-height: var(--lh-body); font-weight: 700; color: var(--warn); }
+.in-fail__actions,
+.in-empty__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.in-empty .rv-state > p:first-child { color: var(--ink); font-size: var(--fs-body); line-height: var(--lh-body); font-weight: 600; }
+
+/* ---------- 결과: 뷰어 + 패널 ---------- */
+.in-main { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 20px; }
+.in-main__viewer { flex: 2 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.in-main__side { flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.in-stale { color: var(--ink-2); font-size: var(--fs-small); line-height: var(--lh-small); }
+
+/* scan_viewer.create() 가 캔버스 컨테이너를 innerHTML='' 로 비우므로 칩·버튼은 컨테이너의 형제다 */
+.in-viewer { position: relative; aspect-ratio: 4 / 3; border-radius: var(--r-card); background: var(--line); overflow: hidden; }
+.in-viewer__canvas { position: absolute; inset: 0; }
+.in-viewer__canvas canvas { display: block; }
+.in-viewer__title {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  max-width: calc(100% - 24px);
+  height: auto;
+  min-height: 32px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+  background: var(--surface);
+  white-space: normal;
+}
+.in-viewer__foot {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  pointer-events: none;
+}
+.in-viewer__foot > * { pointer-events: auto; }
+.in-viewer__foot .rv-chip { background: var(--surface); color: var(--ink-2); font-weight: 400; }
+.in-viewer__foot .rv-btn:not(:disabled) { background: var(--surface); }
+.in-viewer__busy,
+.in-viewer__off {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  text-align: center;
+  font-weight: 600;
+}
+.in-viewer__busy { background: color-mix(in srgb, var(--surface) 72%, transparent); }
+.in-viewer__off { background: var(--line); color: var(--ink-2); }
+
+/* ---------- 범례 ---------- */
+.in-legend { display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+.in-legend__item { display: inline-flex; align-items: center; gap: 8px; }
+.in-legend__sw { flex: none; width: 18px; height: 18px; border-radius: 4px; }
+.in-legend__sw--mesh { background: var(--mesh); }
+.in-legend__sw--tex { border: 1px solid var(--ink-2); background: linear-gradient(135deg, var(--surface) 50%, var(--line-2) 50%); }
+.in-legend__note { display: flex; font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+/* 서버가 준 사유는 여러 줄일 수 있어 아이콘을 첫 줄에 붙인다 */
+.in-legend__note .rv-status { align-items: flex-start; }
+.in-legend__note .rv-status__icon { margin-top: 3px; }
+
+/* ---------- 오른쪽 패널 ---------- */
+.in-quality { display: flex; flex-direction: column; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.in-quality .rv-status__label { font-size: var(--fs-h3); line-height: var(--lh-h3); font-weight: 700; color: var(--warn); }
+.in-quality__sec { display: flex; flex-direction: column; gap: 4px; }
+.in-quality__sec h3 { font-size: var(--fs-cap); line-height: var(--lh-cap); color: var(--ink-2); }
+.in-list { display: flex; flex-direction: column; gap: 4px; padding-left: 18px; list-style: disc; font-size: 14px; line-height: 19px; }
+
+.in-verdict { display: flex; flex-direction: column; gap: 4px; }
+.in-verdict__ok { font-size: var(--fs-h3); line-height: var(--lh-h3); font-weight: 700; }
+.in-verdict__head .rv-status__label { font-size: var(--fs-h3); line-height: var(--lh-h3); font-weight: 700; }
+.in-verdict__head.rv-status--warn .rv-status__label { color: var(--warn); }
+
+.in-kv { display: flex; flex-direction: column; gap: 10px; }
+.in-kv > div { display: grid; grid-template-columns: minmax(0, 8em) minmax(0, 1fr); gap: 2px 12px; }
+.in-kv dt { font-size: var(--fs-small); line-height: var(--lh-small); font-weight: 600; color: var(--ink-2); }
+.in-kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+.in-kv__note { display: block; font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+.in-kv__mono { font-family: var(--font-code); font-size: var(--fs-small); }
+
+.in-size { font-size: var(--fs-h2); line-height: var(--lh-h2); font-weight: 700; font-variant-numeric: tabular-nums; }
+.in-link { display: inline-flex; align-items: center; min-height: 44px; font-weight: 600; }
+
+.in-tech summary { padding: 11px 0; font-size: var(--fs-h3); line-height: var(--lh-h3); font-weight: 600; cursor: pointer; }
+.in-tech[open] summary { margin-bottom: 4px; }
+
+/* ---------- 뷰 품질 ---------- */
+.in-views { display: flex; flex-direction: column; gap: 12px; }
+.in-views__head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 12px; }
+.in-views__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 16px; }
+.in-view { display: flex; flex-direction: column; min-width: 0; overflow: hidden; border-radius: var(--r-card); background: var(--surface); }
+.in-view--dropped .rv-cam__img { opacity: 0.5; }
+.in-view__none { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: var(--fs-small); color: var(--ink-2); }
+.in-view__body { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px 14px; }
+/* 카드가 좁으면(1280px 에서 5열) 실루엣 비율이 다음 줄로 내려가고, 카메라 이름은 잘리지 않는다 */
+.in-view__row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 0 8px; }
+.in-view__name { min-width: 0; white-space: nowrap; font-weight: 600; }
+.in-view__sil { font-size: var(--fs-small); line-height: var(--lh-small); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.in-view__score { font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.in-view__badge { font-size: var(--fs-small); line-height: var(--lh-small); font-weight: 600; }
+.in-view__badge--anom .rv-status__label { color: var(--warn); }
+.in-view__badge--drop .rv-status__label { color: var(--ink-2); }
+
+/* 서버가 증거 다각형(stats.evidence)을 보낼 때만 그려진다. 좌표는 0~1 */
+.in-ev { vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.in-ev--sil { fill: var(--surface); fill-opacity: 0.45; stroke: var(--ink-2); stroke-width: 2; }
+.in-ev--anom { fill: var(--mesh); stroke: var(--mesh); stroke-width: 3; }
+
+@media (max-width: 640px) {
+  .in-auto { margin-left: 0; width: 100%; justify-content: space-between; }
+  .in-pick { width: 100%; }
+  .in-pick select { flex: 1 1 160px; min-width: 0; }
+  .in-kv > div { grid-template-columns: minmax(0, 1fr); }
+}

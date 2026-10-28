@@ -1,0 +1,157 @@
+/* =============================================================
+   수집 화면 — 접두어 co-. 색·크기는 tokens.css 의 변수만 쓴다.
+   letter-spacing·text-transform 을 쓰지 않는다. 모노는 <code>(ID)에만.
+   ============================================================= */
+
+.co-screen { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
+.co-screen > * { min-width: 0; }
+
+.co-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.co-head > div { min-width: 0; }
+
+.co-strong { font-weight: 600; }
+.co-sub { display: block; font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+.co-count { font-size: var(--fs-h3); line-height: var(--lh-h3); font-weight: 500; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+
+/* .rv-field 가 글자를 굵게 하는데 입력 칸까지 굵어지지 않게 */
+.co-screen .rv-field input,
+.co-screen .rv-field select { font-weight: 400; }
+.co-seg-block { display: flex; }
+.co-seg-block .rv-seg__btn { flex: 1 1 0; padding: 0 12px; }
+
+/* ---------- 검사 샘플: 순서 ---------- */
+.co-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr)); gap: 12px; }
+.co-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--surface);
+  font-size: 14px;
+  line-height: 19px;
+  font-weight: 500;
+}
+.co-step__n {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-pill);
+  background: var(--bg);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.co-step[aria-current="step"] { font-weight: 700; }
+.co-step[aria-current="step"] .co-step__n { background: var(--ink); color: var(--surface); }
+
+/* ---------- 검사 샘플: 촬영 + 라벨 ---------- */
+.co-work { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 20px; align-items: stretch; }
+.co-bar-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; }
+
+/* 1440·1280 의 촬영 카드(안쪽 540~630px)에서 5장이 한 줄에 서도록 96px — 120px 이면 4장 + 1장으로 꺾인다 */
+.co-views { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(96px, 100%), 1fr)); gap: 10px; }
+.co-view { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.co-view__img { position: relative; aspect-ratio: 4 / 3; border-radius: var(--r-ctl); background: var(--line); overflow: hidden; }
+.co-view__img img { width: 100%; height: 100%; object-fit: cover; }
+.co-view__fail { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--line); }
+.co-view figcaption { font-size: var(--fs-cap); line-height: var(--lh-cap); font-weight: 600; overflow-wrap: anywhere; }
+
+.co-eval { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.co-eval__q { font-weight: 600; }
+.co-eval__hint { flex: 1 1 100%; font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+
+.co-lab { gap: 16px; }
+.co-pose { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 14px; line-height: 19px; }
+.co-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
+
+.co-fieldset { margin: 0; padding: 0; border: 0; min-width: 0; display: flex; flex-direction: column; }
+.co-fieldset legend { padding: 0; margin-bottom: 8px; font-size: var(--fs-small); line-height: var(--lh-small); font-weight: 600; color: var(--ink-2); }
+.co-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.co-chip {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+.co-chip[aria-pressed="true"] { padding: 0 15px; border: 2px solid var(--ink); font-weight: 600; }
+
+/* ---------- 라벨 현황 ---------- */
+.co-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(130px, 100%), 1fr)); gap: 12px; }
+.co-stats dt { font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+.co-stats dd { margin-top: 2px; font-size: var(--fs-num); line-height: var(--lh-num); font-weight: 700; }
+.co-goals { display: flex; flex-direction: column; gap: 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+
+/* ---------- 표(촬영 목록, 에피소드) ---------- */
+.co-table { min-width: 560px; }
+.co-table--ep { min-width: 640px; }
+.co-table th[scope="row"] { font-weight: 400; }
+.co-table td, .co-table th[scope="row"] { vertical-align: middle; }
+.co-row--on { background: var(--bg); }
+.co-thumbcell { width: 72px; padding-right: 0; }
+.co-thumb { width: 64px; height: 48px; border-radius: 6px; background: var(--line); object-fit: cover; }
+.co-rowact { display: flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap; }
+.co-flag { display: flex; font-weight: 600; }
+.co-more { align-self: flex-start; }
+.co-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+
+/* ---------- 시연 녹화: 설정 ---------- */
+.co-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 16px; }
+.co-field--wide { grid-column: 1 / -1; }
+.co-nextid { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; font-weight: 400; color: var(--ink); }
+.co-nextid code { font-size: var(--fs-body); }
+.co-nextid .rv-muted { font-size: var(--fs-small); font-weight: 500; }
+
+.co-sess { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 12px 16px; }
+.co-sess dt { font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+.co-sess dd { margin-top: 2px; font-weight: 600; }
+
+.co-pre { display: flex; flex-direction: column; gap: 10px; padding-top: 16px; border-top: 1px solid var(--line); }
+.co-pre h3 { font-size: var(--fs-small); line-height: var(--lh-small); font-weight: 600; color: var(--ink-2); }
+.co-checks { display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: 14px; line-height: 19px; }
+.co-check { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.co-check__icon { flex: none; width: 14px; height: 14px; }
+.co-check__icon path { fill: none; stroke: var(--ink); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.co-note { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+.co-note .rv-status { align-self: flex-start; padding-top: 3px; }
+
+/* ---------- 시연 녹화: 실행 ---------- */
+.co-run { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 20px 28px; padding: 24px 28px; }
+.co-run__main { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.co-run__title { font-size: var(--fs-num); line-height: var(--lh-num); font-weight: 700; font-variant-numeric: tabular-nums; }
+.co-bar { height: 8px; overflow: hidden; border-radius: var(--r-pill); background: var(--bg); }
+.co-bar__fill { height: 100%; background: var(--ink); }
+.co-run__hint { font-size: 14px; line-height: 19px; color: var(--ink-2); }
+.co-run__alert { font-weight: 600; }
+.co-run__btns { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; }
+.co-why { flex: 1 1 100%; font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+.co-run__stats,
+.co-keys {
+  flex: 1 1 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.co-run__stats dt,
+.co-keys dt { font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
+.co-run__stats dd,
+.co-keys dd { margin-top: 2px; font-weight: 600; }
+
+/* ---------- 편집 대화상자 ---------- */
+.co-edit { display: flex; flex-direction: column; gap: 16px; }
+
+@media (max-width: 900px) {
+  .co-work { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 640px) {
+  .co-run { padding: 20px; }
+}
