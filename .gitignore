@@ -35,8 +35,22 @@ lerobot_data/models/
 # 배경 참조 이미지는 리그·조명마다 다르다(코드가 아니라 현장 데이터)
 lerobot_data/background/
 
+# 3D 검사 촬영본과 리그 캘리브레이션 샷·결과도 현장 데이터다. 촬영본에는 주변 사람이
+# 찍힐 수 있어서 공개 저장소에 올리면 안 된다.
+lerobot_data/inspections/
+lerobot_data/rig_calib_shots/
+lerobot_data/rig_calibration.json
+
 # 펌웨어 빌드 산출물 (arduino-cli --export-binaries). 소스만 버전관리한다.
 firmware/*/build/
 
 # 서버 로그 (logs/server.log). 내용은 런타임 기록이라 버전관리하지 않는다.
 logs/
+*.log
+
+# 브라우저 자동화 도구가 남기는 스크린샷·콘솔 기록
+.playwright-mcp/
+
+# scripts/dev_sim.py 격리 서버의 데이터(녹화·촬영·보정). 실제 lerobot_data 와 섞지 않는다.
+# 서버를 여럿 띄우면 --data 를 .dev_data_<이름> 처럼 따로 주므로 접두어로 받는다.
+.dev_data*/
