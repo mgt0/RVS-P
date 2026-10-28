@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from flask import Blueprint, jsonify, request
 
+from ..core.cycle import CycleBusyError
 from ..utils.errors import ValidationError
 from . import current_hub
 
@@ -33,6 +34,28 @@ def _ok(name: str | None, state: dict):
     return jsonify({"ok": True, "name": name, **state})
 
 
+def _cycle():
+    # 벨트만 붙인 최소 허브(테스트)에는 사이클이 없다.
+    return getattr(current_hub(), "cycle", None)
+
+
+def _manual() -> None:
+    """자동 사이클이 벨트를 쥐고 있는 동안 수동 구동 명령을 거부한다. stop 은 이걸 부르지 않는다 — 정지는 늘 허용한다."""
+    cycle = _cycle()
+    if cycle is not None and cycle.active:
+        raise CycleBusyError("벨트를 조작")
+
+
+def _abort_cycle() -> None:
+    """사람이 벨트를 세웠는데 사이클이 다음 단계에서 다시 돌리면 안 된다 — 사이클도 함께 중단한다.
+
+    플래그만 세운다. 모터는 사이클 스레드가 세우고, 이 요청의 정지는 지금 바로 세운다.
+    """
+    cycle = _cycle()
+    if cycle is not None:
+        cycle.abort("벨트가 수동으로 정지되어 사이클을 중단했습니다.")
+
+
 @bp.get("/status")
 def status():
     """전 벨트 상태. 폴링해도 안전하다(연결이 끊겨 있으면 포트를 열지 않는다)."""
@@ -49,13 +72,16 @@ def status():
 @bp.post("/start", defaults={"name": None})
 @bp.post("/<name>/start")
 def start(name):
+    _manual()
     return _ok(name, _belt(name).start())
 
 
 @bp.post("/stop", defaults={"name": None})
 @bp.post("/<name>/stop")
 def stop(name):
-    return _ok(name, _belt(name).stop())
+    belt = _belt(name)
+    _abort_cycle()      # 정지는 사이클 중에도 허용한다 — 대신 사이클도 멈춘다
+    return _ok(name, belt.stop())
 
 
 @bp.post("/speed", defaults={"name": None})
@@ -66,6 +92,7 @@ def speed(name):
     steps/sec 대신 RPM 을 받는다. 1.8도 모터의 마이크로스텝 환산은 펌웨어가
     하므로(DIP 스위치와 같은 값이 거기 박혀 있다) 호스트는 몰라도 된다.
     """
+    _manual()
     body = request.get_json(silent=True) or {}
     return _ok(name, _belt(name).set_speed_rpm(body.get("rpm")))
 
@@ -78,6 +105,7 @@ def direction(name):
     구동 중에 바꾸면 펌웨어가 잠깐 멈추고 저속에서 다시 가속한다
     (부하가 걸린 상태에서 즉시 반전시키면 탈조한다).
     """
+    _manual()
     body = request.get_json(silent=True) or {}
     return _ok(name, _belt(name).set_direction(body.get("direction")))
 
@@ -87,16 +115,22 @@ def direction(name):
 def enable(name):
     """드라이버 활성/해제. 예: {"enabled": false}
 
-    해제하면 홀딩 토크가 풀려 벨트를 손으로 움직일 수 있다.
+    해제하면 홀딩 토크가 풀려 벨트를 손으로 움직일 수 있다. 사이클 중에도 허용하지만 해제는 정지와 같아
+    사이클을 중단한다(다음 START 가 드라이버를 다시 켜므로, 사이클이 이어지면 손이 닿은 벨트가 다시 돈다).
     """
     body = request.get_json(silent=True) or {}
-    return _ok(name, _belt(name).set_enabled(bool(body.get("enabled", True))))
+    enabled = bool(body.get("enabled", True))
+    belt = _belt(name)
+    if not enabled:
+        _abort_cycle()
+    return _ok(name, belt.set_enabled(enabled))
 
 
 @bp.post("/servo", defaults={"name": None})
 @bp.post("/<name>/servo")
 def servo(name):
     """분류 게이트 서보 각도. 예: {"deg": 45}  (0~180)"""
+    _manual()
     body = request.get_json(silent=True) or {}
     return _ok(name, _belt(name).set_servo_deg(body.get("deg")))
 
@@ -109,6 +143,7 @@ def zero(name):
     축을 한쪽 끝으로 옮겨둔 뒤 부른다. 이후 config 의 limit_rev 범위를 벗어나면
     펌웨어가 스스로 멈춘다. 보드 전원을 껐다 켜면 다시 잡아야 한다.
     """
+    _manual()
     return _ok(name, _belt(name).set_zero())
 
 
@@ -121,6 +156,7 @@ def set_end(name):
     대신 축을 직접 움직여 정하므로 값이 실물과 어긋나지 않는다. 끝점은 파일에
     저장돼 전원을 껐다 켜도 남는다.
     """
+    _manual()
     return _ok(name, _belt(name).set_end())
 
 
@@ -128,6 +164,7 @@ def set_end(name):
 @bp.post("/<name>/move")
 def move(name):
     """그 위치(mm)로 이동하고 스스로 멈춘다. 예: {"mm": 320}"""
+    _manual()
     body = request.get_json(silent=True) or {}
     return _ok(name, _belt(name).move_to_mm(body.get("mm")))
 
@@ -141,6 +178,7 @@ def release(name):
     그래서 업로드하려면 포트를 비워야 하는데, 그것 때문에 서버를 통째로 내리면
     카메라까지 끊긴다. 이 엔드포인트는 포트만 놓아준다. 다음 START 에서 자동 재연결.
     """
+    _manual()
     belt = _belt(name)
     belt.disconnect()
     return jsonify({"ok": True, "name": name, "released": True, **belt.state})

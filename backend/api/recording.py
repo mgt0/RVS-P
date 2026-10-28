@@ -5,6 +5,7 @@ from __future__ import annotations
 from flask import Blueprint, jsonify, request
 
 from ..config import CAMERA_ORDER, DEFECT_TYPES
+from ..core.cycle import CycleBusyError
 from ..utils.errors import RecordingStateError
 from . import current_hub
 
@@ -34,6 +35,8 @@ def meta():
 def status():
     """대시보드 메인 폴링 엔드포인트. 한 번에 모든 상태를 반환."""
     hub = current_hub()
+    # 지금 녹화를 시작하면 기록될 카메라 간 동기 오차(ms). 2대 미만이면 오차라는 개념이 없어 None.
+    frames, skew_ms = hub.cameras.snapshot()
     return jsonify(
         {
             "ok": True,
@@ -42,13 +45,20 @@ def status():
             "follower": hub.follower.status(),
             "teleop": hub.teleop_status,
             "autorun": hub.autorun_status,
+            "demo": hub.demo.status(),
+            "cycle": hub.cycle.status(),
             "cameras": hub.cameras.status_all(),
+            "sync_skew_ms": round(skew_ms, 1) if len(frames) >= 2 else None,
         }
     )
 
 
 @bp.post("/recording/start")
 def start_recording():
+    if current_hub().cycle.active:    # 사이클이 도는 동안의 움직임은 시연 데이터가 아니다
+        raise CycleBusyError("녹화를 시작")
+    if current_hub().demo.active:    # 세션이 녹화를 쥐고 있다 — 수동 시작이 끼면 세션의 에피소드와 엉킨다
+        raise RecordingStateError("시연 세션이 진행 중입니다. 세션을 끝낸 뒤 수동으로 시작하세요.")
     body = request.json or {}
     result = current_hub().recorder.start(
         episode_id=body.get("episode_id", ""),
@@ -61,6 +71,10 @@ def start_recording():
 
 @bp.post("/recording/stop")
 def stop_recording():
+    if current_hub().demo.active:    # 세션 스레드가 녹화를 쥐고 있다 — 수동 정지가 끼면 그 스레드의 stop 과 겹쳐 에피소드를 잃는다
+        raise RecordingStateError(
+            "시연 세션이 진행 중이라 녹화를 수동으로 정지할 수 없습니다. 세션의 '다음'(저장) 또는 '끝내기'를 쓰세요."
+        )
     result = current_hub().recorder.stop()
     return jsonify({"ok": True, "recording": result})
 
@@ -111,6 +125,29 @@ def emergency_stop():
     return jsonify({"ok": True, **current_hub().emergency_stop()})
 
 
+@bp.post("/emergency_reset")
+def emergency_reset():
+    """비상 정지 해제 — 비상 정지가 꺼둔(DISABLE) 스텝 드라이버를 다시 켠다.
+
+    ENABLE 만 한다. 벨트를 돌리거나 축을 옮기지 않는다 — 다시 구동하는 것은 사람이
+    각 START 로 한다. 한 축이 실패해도 나머지는 계속 시도한다(emergency_stop 과 같은 원칙).
+
+    연결된 벨트만 대상으로 한다(status() 처럼). 끊겼거나 release 한 벨트에 ENABLE 을 보내면 포트를 다시 연다 —
+    펌웨어를 업로드하는 중이면 방해가 된다. 건너뛴 벨트는 "not_connected" 로 알린다.
+    """
+    result: dict = {}
+    for name, ctrl in current_hub().conveyors.items():
+        if not ctrl.connected:
+            result[name] = "not_connected"
+            continue
+        try:
+            ctrl.set_enabled(True)
+            result[name] = "enabled"
+        except Exception as exc:  # noqa: BLE001
+            result[name] = {"error": str(exc)}
+    return jsonify({"ok": True, "conveyors": result})
+
+
 @bp.post("/teleop/start")
 def start_teleop():
     return jsonify({"ok": True, "teleop": current_hub().start_teleop()})
@@ -159,6 +196,8 @@ def go_home():
     """홈 포지션 복귀. 녹화 중에는 거부한다 — 데이터 중간에 인위적 궤적이 섞이면
     ACT 학습이 오염된다."""
     hub = current_hub()
+    if hub.cycle.active:    # 사이클의 autorun 이 팔로워를 쥐고 있다 — 홈 복귀가 끼면 두 쪽이 같은 팔에 명령을 쓴다
+        raise CycleBusyError("홈 복귀를 실행")
     if hub.recorder.state.value == "RECORDING":
         raise RecordingStateError("녹화 중에는 홈 복귀를 실행할 수 없습니다. 먼저 STOP 하세요.")
 

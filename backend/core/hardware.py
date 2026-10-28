@@ -23,6 +23,8 @@ from .act_trainer import TrainingManager
 from .calibration import Calibration
 from .camera_manager import CameraManager
 from .conveyor import ConveyorController
+from .cycle import CycleBusyError, CycleRunner
+from .demo_session import DemoSession
 from .port_finder import IdentifySession, PortRegistry
 from .recorder import Recorder
 from .rollout import AutoRunLoop
@@ -54,6 +56,11 @@ class HardwareHub:
         self._teleop: TeleopLoop | None = None
         self._autorun: AutoRunLoop | None = None
         self._lock = threading.RLock()
+        self._closed = False    # shutdown() 이 끝나 포트를 놓았다 — 그 뒤의 정지 명령이 끊긴 포트를 다시 열지 않게 한다
+        # 시연 녹화 세션(녹화→리셋 반복). 비상 정지·종료가 이 객체를 먼저 끊는다.
+        self.demo = DemoSession(self)
+        # 자동 사이클(집기→이송→검사→분류). 비상 정지·종료가 이 객체를 가장 먼저 끊는다.
+        self.cycle = CycleRunner(self)
 
     def _build_arm(self, role: str) -> ArmController:
         arm_cfg = self.cfg.arms[role]
@@ -81,6 +88,8 @@ class HardwareHub:
         with self._lock:
             # 순서가 중요하다: 녹화 중단 → 텔레오퍼 정지 → 홈 복귀/토크 해제 → 카메라 해제
             try:
+                self.cycle.abort("서버 종료")   # 사이클이 아래에서 정리하는 벨트·autorun 을 다시 구동하지 못하게 먼저 끊는다
+                self.demo.abort("서버 종료")    # 세션이 녹화를 다시 시작하지 못하게 먼저 끊는다
                 if self.recorder.state.value != "IDLE":
                     self.recorder.abort("서버 종료")
             finally:
@@ -94,7 +103,13 @@ class HardwareHub:
                 self.cameras.stop()
                 for conveyor in self.conveyors.values():
                     conveyor.disconnect()
+                # 락을 쥔 채 세운다. 이 락을 기다리던 사이클 스레드의 start_autorun 은 이걸 보고 물러난다(아래).
+                self._closed = True
         logger.info("하드웨어 정리 완료")
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     # ---------------------------------------------------------------- 비상 정지
     def emergency_stop(self) -> dict:
@@ -111,6 +126,22 @@ class HardwareHub:
         그냥 평소처럼 시작하면 원래대로 동작한다 — 별도 해제 절차가 필요 없다.
         """
         result: dict = {}
+        # 자동 사이클을 가장 먼저 끊는다. 중단 플래그만 세우고 바로 돌아오므로 아래 정지를 늦추지 않는다 —
+        # 사이클 스레드가 깨어 벨트와 autorun 을 세우고(아래 정지도 같은 일을 한다) 다음 단계에 들어가지 않는다.
+        # 이 호출이 어떻게 실패하든 아래 정지 절차는 반드시 그대로 진행한다.
+        try:
+            self.cycle.abort("비상 정지")
+        except Exception:  # noqa: BLE001
+            logger.exception("비상 정지: 자동 사이클 중단 실패")
+
+        # 이어서 시연 세션을 끊는다. 중단 플래그만 세우고 바로 돌아오므로 아래 정지를 늦추지 않는다 —
+        # 세션 스레드가 알아서 진행 중이던 에피소드를 버리고 끝나며, 리셋이 끝나도 새 녹화를 시작하지
+        # 않는다. 이 호출이 어떻게 실패하든 아래 정지 절차는 반드시 그대로 진행한다.
+        try:
+            self.demo.abort("비상 정지")
+        except Exception:  # noqa: BLE001
+            logger.exception("비상 정지: 시연 세션 중단 실패")
+
         # rollout(autorun)을 가장 먼저 세운다. 이게 살아 있으면 팔로워에 계속
         # 목표 각도를 밀어넣기 때문에, 나중에 멈추면 그 사이 팔이 더 움직인다.
         try:
@@ -153,6 +184,8 @@ class HardwareHub:
     # ---------------------------------------------------------------- 텔레오퍼
     def start_teleop(self) -> dict:
         with self._lock:
+            if self.cycle.active:    # 사이클이 팔로워를 쥐고 있다. 사이클 자신은 이 경로로 오지 않는다
+                raise CycleBusyError("텔레오퍼레이션을 시작")
             if self._autorun and self._autorun.is_alive():
                 raise ValidationError("autorun이 실행 중입니다. 먼저 ROLLOUT STOP을 누르세요.")
             if self._teleop and self._teleop.is_alive():
@@ -194,11 +227,16 @@ class HardwareHub:
         rate_hz: int = 10,
         waypoints: str | None = None,
         speed: float = 1.0,
+        *,
+        by_cycle: bool = False,
     ) -> dict:
         """학습된 ACT 정책으로 팔로워를 자율 제어한다.
 
         teleop과는 상호 배타적이다 — 둘 다 follower.write()를 호출하는
         루프라 동시에 돌면 명령이 뒤섞인다. 반드시 하나만 실행되게 막는다.
+
+        by_cycle 은 자동 사이클(core/cycle.py)이 자기 집기 단계에서만 True 로 부른다. 사이클이 도는 동안의
+        수동 시작은 거부한다(API 라우트는 이 인자를 받지 않는다).
 
         checkpoint는 필수다. 학습이 `lerobot-train` 별도 프로세스에서 도는
         구조라(act_trainer.LeRobotTrainer 참고), 이 서버는 어느 체크포인트가
@@ -206,6 +244,13 @@ class HardwareHub:
         pretrained_model/` 처럼 학습 로그 마지막 줄에 찍힌 경로를 그대로 넘겨라.
         """
         with self._lock:
+            if self.cycle.active and not by_cycle:
+                raise CycleBusyError("자율 실행(rollout)을 시작")
+            if by_cycle and (self.cycle.aborted or self._closed):
+                # 사이클 스레드는 점검(_check)을 통과한 뒤 이 락을 기다리는데, 그 사이에 비상 정지(cycle.abort →
+                # stop_autorun)나 서버 종료가 이미 끝났을 수 있다. 그대로 이어가면 정지 뒤에 팔로워를 연결하고
+                # 토크를 걸어 움직인다 — 락 안에서 다시 확인해 거부한다.
+                raise ValidationError("사이클이 중단되어 자율 실행을 시작하지 않았습니다.")
             if not checkpoint and not waypoints:
                 raise ValidationError(
                     "checkpoint 또는 waypoints 경로가 필요합니다. checkpoint 는 "

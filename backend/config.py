@@ -7,6 +7,7 @@ config.yaml 을 dataclass 로 역직렬화한다. dict 를 그대로 들고 다�
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,6 +66,22 @@ class CameraConfig:
     # 센서 밝기(UVC BRIGHTNESS, 대략 -64~64). 노출을 길게 잡아 플리커를 없앤 뒤
     # 여기서 밝기를 낮춰 포화를 막는다. None 이면 카메라 기본값을 그대로 둔다.
     brightness: float | None = None
+    # 조명 플리커 방지 주파수(50/60Hz). 한국은 60. 자동 노출일 때만 효과가 있다.
+    # 이 Arducam 은 드라이버 기본값이 50Hz 이고, 열 때마다 50Hz 로 돌아가므로(실측
+    # 2026-10-12) 매번 다시 넣는다. None 이면 건드리지 않는다.
+    power_line_hz: int | None = None
+    # 열린 직후 화면 평균 밝기(0~255)를 이 값으로 맞추고 잠근다. 조명이 바뀌어도
+    # 고정 노출처럼 날아가지 않게 하려는 것. None 이면 exposure/brightness 그대로.
+    target_mean: float | None = None
+    # UVC 대비(0~64, 기본 32)·감마(72~500, 기본 100). brightness 를 많이 내리면 흰색 상한도
+    # 같이 내려가(-64 에서 약 183) 화면이 뿌옇게 된다 — 대비를 올리고 감마를 낮춰 어둡게 하면
+    # 선명함이 유지된다(실측 2026-10-12, Arducam). None 이면 건드리지 않는다.
+    contrast: float | None = None
+    gamma: float | None = None
+    # 3D 검사 ROI: 물체가 멈추는 자리의 화면 영역 [x0, y0, x1, y1] (0~1, 플립 적용 후 좌표).
+    # 실루엣은 이 안에서만 뽑는다 — 배경 캡처 이후 뒤에서 사람·로봇팔이 움직인 것까지
+    # 물체로 잡히지 않게. None 이면 리그 캘리브레이션이 있으면 그 작업 공간 투영, 없으면 화면 전체.
+    roi: tuple[float, float, float, float] | None = None
 
     @property
     def resolution(self) -> str:
@@ -136,6 +153,36 @@ class ConveyorConfig:
 
 
 @dataclass(frozen=True)
+class CycleConfig:
+    """자동 사이클(집기 → 이송 → 검사 → 분류) 손잡이. 기본값은 출발점일 뿐이다 — 현장에서 재서 맞춘다.
+
+    시간은 전부 초다. 벨트 이송 거리는 벨트 속도(belt_rpm)와 시간의 곱이라 둘이 한 쌍으로 움직인다.
+    """
+
+    # 픽 동작 = scripts/to_waypoints.py 산출 JSON. pick_checkpoint 가 있으면 그쪽이 이긴다.
+    pick_waypoints: Path = PROJECT_ROOT / "lerobot_data" / "waypoints" / "pick_place.json"
+    pick_checkpoint: Path | None = None
+    pick_speed: float = 1.0
+    pick_timeout_sec: float = 90.0
+    # 집기 궤적이 끝난 뒤 이송(벨트 구동)을 시작하기 전에 기다리는 시간. 그리퍼가 물체를 놓는 동작이 끝나게 한다.
+    pick_settle_sec: float = 1.0
+    belt: str = "work"            # 물체를 싣는 벨트 키(config conveyors 의 키)
+    belt_dir: str = "cw"
+    belt_rpm: float = 10.0
+    to_scan_sec: float = 3.0
+    settle_sec: float = 0.5
+    resolution: int = 96
+    # 표면 이상 정점 비율이 이 값 이상이면 불량. 근거는 config.yaml 주석(깨끗한 큐브 0.47% 이하, 펜 자국 1.5% 이상).
+    defect_ratio: float = 0.01
+    good_run_sec: float = 4.0
+    defect_to_branch_sec: float = 1.5
+    gate_open_deg: int = 15
+    gate_close_deg: int = 130
+    gate_hold_sec: float = 2.0
+    basket_capacity: int = 2
+
+
+@dataclass(frozen=True)
 class ServerConfig:
     host: str = "0.0.0.0"
     port: int = 5000
@@ -158,6 +205,7 @@ class AppConfig:
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
     # 벨트가 여러 대일 수 있다(공급용 + 로봇 작업 영역용). 키가 API 경로의 이름이 된다.
     conveyors: dict[str, ConveyorConfig] = field(default_factory=dict)
+    cycle: CycleConfig = field(default_factory=CycleConfig)
 
 
 def _as_tuple_of_pairs(raw) -> tuple[tuple[float, float], ...]:
@@ -243,10 +291,15 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             fourcc=node.get("fourcc", "MJPG"),
             exposure=None if node.get("exposure") is None else float(node["exposure"]),
             brightness=None if node.get("brightness") is None else float(node["brightness"]),
+            power_line_hz=None if node.get("power_line_hz") is None else int(node["power_line_hz"]),
+            target_mean=None if node.get("target_mean") is None else float(node["target_mean"]),
+            contrast=None if node.get("contrast") is None else float(node["contrast"]),
+            gamma=None if node.get("gamma") is None else float(node["gamma"]),
             lock_white_balance=bool(node.get("lock_white_balance", False)),
             white_balance=(
                 None if node.get("white_balance") is None else float(node["white_balance"])
             ),
+            roi=_roi(name, node.get("roi")),
         )
 
     # conveyors(복수) 가 우선. 없으면 예전 단일 conveyor 키를 "main" 으로 승격 —
@@ -272,6 +325,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     return AppConfig(
         server=server, safety=safety, recording=recording,
         arms=arms, cameras=cameras, conveyors=conveyors,
+        cycle=_cycle(raw.get("cycle") or {}),
     )
 
 
@@ -280,3 +334,69 @@ def _env_bool(key: str, default: bool) -> bool:
     if val is None:
         return bool(default)
     return val.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _cycle(node: dict) -> CycleConfig:
+    """cycle.* 검증. 잘못된 값을 조용히 쓰면 벨트가 엉뚱한 시간만큼 돌거나 게이트가 범위 밖 각도로 간다 —
+    사이클이 도는 중에 알게 되는 것보다 시작할 때 바로 알리는 편이 안전하다."""
+    base = CycleConfig()
+
+    def num(key: str, lo: float, hi: float | None = None, *, whole: bool = False, lo_open: bool = False):
+        raw = node.get(key, getattr(base, key))
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"cycle.{key} 는 숫자여야 합니다: {raw!r}") from None
+        ok = math.isfinite(value) and (value > lo if lo_open else value >= lo) and (hi is None or value <= hi)
+        if not ok or (whole and value != int(value)):
+            bound = f"{lo:g}{' 초과' if lo_open else ' 이상'}" + ("" if hi is None else f" {hi:g} 이하")
+            raise ValueError(f"cycle.{key} 는 {'정수이고 ' if whole else ''}{bound}만 허용합니다: {raw!r}")
+        return int(value) if whole else value
+
+    def path(key: str) -> Path | None:
+        raw = node.get(key, getattr(base, key))
+        if raw is None:
+            return None
+        p = Path(str(raw)).expanduser()
+        return p if p.is_absolute() else PROJECT_ROOT / p     # 상대 경로는 실행 위치가 아니라 레포 루트 기준
+
+    belt = str(node.get("belt", base.belt)).strip()
+    belt_dir = str(node.get("belt_dir", base.belt_dir)).strip().lower()
+    if not belt:
+        raise ValueError("cycle.belt 는 config 의 conveyors 키(예: work)여야 합니다.")
+    if belt_dir not in ("cw", "ccw"):
+        raise ValueError(f"cycle.belt_dir 는 'cw' 또는 'ccw' 여야 합니다: {node.get('belt_dir')!r}")
+    return CycleConfig(
+        pick_waypoints=path("pick_waypoints") or base.pick_waypoints,
+        pick_checkpoint=path("pick_checkpoint"),
+        pick_speed=num("pick_speed", 0.0, 5.0, lo_open=True),
+        pick_timeout_sec=num("pick_timeout_sec", 0.0, 600.0, lo_open=True),
+        pick_settle_sec=num("pick_settle_sec", 0.0, 60.0),      # 0 이면 기다리지 않는다
+        belt=belt,
+        belt_dir=belt_dir,
+        belt_rpm=num("belt_rpm", 0.0, lo_open=True),
+        to_scan_sec=num("to_scan_sec", 0.0, 300.0, lo_open=True),     # 상한은 단위를 잘못 적은 값(ms 로 3000)을 거르려는 것
+        settle_sec=num("settle_sec", 0.0, 3.0),         # /api/scan/capture 와 같은 상한
+        resolution=num("resolution", 16, 96, whole=True),   # /api/scan/capture 와 같은 범위
+        defect_ratio=num("defect_ratio", 0.0, 1.0, lo_open=True),   # 0 이면 모든 물체가 불량이 된다
+        good_run_sec=num("good_run_sec", 0.0, 300.0, lo_open=True),
+        defect_to_branch_sec=num("defect_to_branch_sec", 0.0, 300.0, lo_open=True),
+        gate_open_deg=num("gate_open_deg", 0, 180, whole=True),     # SERVO 명령 범위
+        gate_close_deg=num("gate_close_deg", 0, 180, whole=True),
+        gate_hold_sec=num("gate_hold_sec", 0.0, 60.0),
+        basket_capacity=num("basket_capacity", 1, whole=True),
+    )
+
+
+def _roi(camera: str, value) -> tuple[float, float, float, float] | None:
+    """cameras.*.roi 검증. 잘못된 ROI 를 조용히 쓰면 실루엣이 통째로 사라지거나 엉뚱한 곳을
+    잡는데, 그 원인을 3D 화면에서 거꾸로 찾기는 어렵다 — 시작할 때 바로 알린다."""
+    if value is None:
+        return None
+    try:
+        x0, y0, x1, y1 = (float(v) for v in value)
+    except (TypeError, ValueError):
+        raise ValueError(f"cameras.{camera}.roi 는 [x0, y0, x1, y1] 숫자 4개여야 합니다: {value!r}") from None
+    if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+        raise ValueError(f"cameras.{camera}.roi 는 0~1 범위에서 x0<x1, y0<y1 이어야 합니다: {value!r}")
+    return x0, y0, x1, y1

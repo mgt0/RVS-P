@@ -121,6 +121,14 @@ class ConveyorController:
             self._wait_boot(ser)
         return ser
 
+    def connect(self) -> None:
+        """포트를 연다(이미 열려 있으면 그대로). 첫 명령이 하던 lazy 연결을 명령 없이 미리 한다.
+
+        자동 사이클이 팔을 움직이기 전에 벨트 포트부터 확인하려고 쓴다. 열지 못하면 ConveyorError.
+        """
+        with self._hold(_CMD_LOCK_TIMEOUT_SEC, "connect"):
+            self._ensure_open()
+
     def _wait_boot(self, ser: serial.Serial) -> None:
         # 수동 대기 대신 PING 을 먼저 쏜다. BlackPill(네이티브 USB)은 리셋이 없어
         # READY 배너가 영영 안 오는데, 그때 타임아웃까지 통째로 기다리면 첫 명령이

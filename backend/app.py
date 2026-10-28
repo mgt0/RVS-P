@@ -18,9 +18,13 @@ from werkzeug.exceptions import HTTPException
 
 from .api import analysis as analysis_api
 from .api import conveyor as conveyor_api
+from .api import cycle as cycle_api
+from .api import datasets as datasets_api
+from .api import demo as demo_api
 from .api import ports as ports_api
 from .api import recording as recording_api
 from .api import stream as stream_api
+from .api import system as system_api
 from .config import AppConfig, load_config
 from .core.hardware import HardwareHub
 from .utils.errors import OmxError
@@ -86,6 +90,10 @@ def create_app(config: AppConfig | None = None) -> Flask:
     app.register_blueprint(recording_api.bp)
     app.register_blueprint(analysis_api.bp)
     app.register_blueprint(conveyor_api.bp)
+    app.register_blueprint(datasets_api.bp)
+    app.register_blueprint(demo_api.bp)
+    app.register_blueprint(cycle_api.bp)
+    app.register_blueprint(system_api.bp)
 
     _register_error_handlers(app)
     _register_frontend(app)
@@ -158,6 +166,17 @@ def _register_frontend(app: Flask) -> None:
 
     @app.get("/static/<path:filename>")
     def static_files(filename: str):
+        if filename.startswith("ui/fonts/"):
+            # 폰트는 2MB 라 화면마다 다시 받으면 글자가 깜빡이고 대역폭을 먹는다. 그래서 위의 no-store 에서
+            # 빼고 1년 캐시한다 — 대신 폰트 파일을 교체하려면 파일 이름도 바꿔야 한다(브라우저가 안 묻는다).
+            # MIME 은 OS 레지스트리에 기대는데 이 PC(Windows, Python 3.11)는 .woff2 를 몰라서
+            # (mimetypes.guess_type → None) application/octet-stream 으로 나간다 — 직접 지정한다.
+            response = send_from_directory(
+                FRONTEND_DIR / "static", filename,
+                mimetype="font/woff2" if filename.endswith(".woff2") else None,
+            )
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            return response
         return _no_cache(send_from_directory(FRONTEND_DIR / "static", filename))
 
     @app.get("/healthz")
