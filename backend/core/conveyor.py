@@ -506,7 +506,7 @@ class ConveyorController:
         return self._refresh()
 
     def set_enabled(self, enabled: bool) -> dict:
-        """드라이버 허용/차단. 차단(DISABLE)은 프리런으로 세우고, 다시 허용하기 전까지 START 를 거부한다."""
+        """드라이버 허용/차단. 차단(DISABLE)은 브레이크로 세우고, 다시 허용하기 전까지 START 를 거부한다."""
         self._command("ENABLE" if enabled else "DISABLE")
         self._state["enabled"] = bool(enabled)
         if not enabled:

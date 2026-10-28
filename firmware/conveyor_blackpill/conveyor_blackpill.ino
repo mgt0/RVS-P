@@ -7,12 +7,12 @@
 //   RPM·위치는 알 수 없고, 속도는 PWM 듀티(%)로만 정한다.
 //
 // 드라이버 HW-095
-//   L298N 듀얼 H-브리지 모듈로 추정한다. 'HW-095' 라는 이름이 L298N 인지는 확인하지 못했다
-//   (판매처 표기로는 'HW-095A' 가 L298 기반으로 나온다). 실물 칩 마킹으로 확인할 것.
-//   아래 동작 근거는 ST L298 데이터시트(13쪽본)의 전기적 특성·진리표다.
-//   채널마다 ENx(속도, PWM)와 INx 2개(방향)를 쓴다.
-//     EN=H : IN1=H,IN2=L 정방향(CW) / IN1=L,IN2=H 역방향(CCW) / IN1=IN2 브레이크(Fast Motor Stop)
-//     EN=L : IN 과 무관하게 프리런(Free Running Motor Stop)
+//   L298N 듀얼 H-브리지 모듈이다(사용자 확인 2026-10-28. 판매 페이지에는 'HW-095A' 가 L298 기반으로
+//   나온다). 아래 동작 근거는 ST L298 데이터시트(13쪽본)의 전기적 특성·진리표다.
+//   채널마다 EN 하나와 IN 둘이 있다. 이 리그는 EN 을 보드에 배선하지 않고 모듈의 ENA/ENB 점퍼를
+//   꽂아 둔다(EN=5V 고정). 그래서 속도(PWM)와 방향을 IN 두 핀으로만 만든다.
+//     EN=H : IN1=H,IN2=L 구동 / IN1=L,IN2=H 반대 구동 / IN1=IN2 브레이크(Fast Motor Stop)
+//     EN=L 의 프리런(Free Running Motor Stop)은 EN 을 못 건드리므로 쓸 수 없다 — 정지는 전부 브레이크다.
 //
 // 빌드 환경 (Arduino IDE)
 //   보드 매니저: "STM32 MCU based boards" (STM32duino 공식 코어)
@@ -35,49 +35,72 @@
 //   그리고 CubeProgrammer 는 한글 경로를 못 읽으므로("바탕 화면") .bin 을 ASCII
 //   경로로 복사한 뒤 그 경로를 넘겨야 한다.
 //
-// 배선 (BlackPill 쪽. 기존 TB6600 배선 핀을 재사용했다. PB0 는 구 LM 가이드의 PUL 자리)
-//   M1 (A 채널): ENA → PB0 (PB0_ALT1 = TIM3_CH3),     IN1 → PA1, IN2 → PA2
-//   M2 (B 채널): ENB → PA3 (PA3_ALT1 = TIM5_CH4),     IN3 → PA6, IN4 → PA7
-//   분류 게이트 서보 신호선 → PB3 (서보 전원은 외부 5V — 스톨 전류가 보드 한계를 넘는다)
-//   ⚠ PA0 는 쓰지 않는다. 온보드 KEY 버튼이라 누르면 GND 에 직결된다(core 의 variant 헤더에도
-//     USER_BTN = PA0). 출력(PWM)으로 쓰면 버튼을 누를 때 핀이 손상될 수 있어 펌웨어는 PA0 을
-//     건드리지 않는다(리셋 상태의 입력 그대로).
+// 배선 (사용자의 실제 배선: "모터드라이브를 A1,A2,A4,A5 이렇게 연결")
+//   A1/A2/A4/A5 와 IN1~IN4 의 대응은 가정이다. 방향이 실물과 반대면 모터 선을 바꾸거나 DIR 를 쓴다.
+//   대응 자체가 다르면 motors[] 의 핀만 고친다(핀별 타이머는 아래 표로 확인).
 //
-//   ENx 는 analogWrite 하드웨어 PWM 이다. 서로 다른 타이머(TIM3/TIM5)여야 하고, Servo 라이브러리가
-//   쓰는 타이머와도 겹치면 안 된다. 서보 타이머 근거(STM32duino core 3.0.0 소스에서 확인):
+//   핀    신호         PWM 타이머 (core 3.0.0 PeripheralPins_BLACKPILL_F411CE.c 로 확인)
+//   PA1   M1 IN1       TIM2_CH2
+//   PA2   M1 IN2       TIM2_CH3
+//   PA4   M2 IN3       없음(SPI 핀뿐) — GPIO 정적 출력만 된다
+//   PA5   M2 IN4       TIM2_CH1
+//   PB3   게이트 서보    TIM11 (Servo 라이브러리). 서보 전원은 외부 5V — 스톨 전류가 보드 한계를 넘는다
+//   EN    ENA/ENB 점퍼를 꽂은 채 둔다(보드 핀 없음)
+//   (PA0 는 온보드 KEY 버튼이라 출력으로 쓰지 않는다.)
+//
+// 구동 방식 — EN=H 고정이라 구동/브레이크 PWM 이다(속도 ≈ 구동 구간의 비율). 듀티 0 이 곧 브레이크다.
+//   M1 (IN1·IN2 둘 다 PWM 핀)
+//     CW  = IN1=PWM(duty), IN2=L        CCW = IN1=L, IN2=PWM(duty)        브레이크 = IN1=IN2=L
+//   M2 (IN3=PA4 에 타이머가 없어 PA5=IN4 만 PWM)
+//     CW  = IN3=L, IN4=PWM(duty)        CCW = IN3=H, IN4=PWM(100-duty)(반전 PWM)   브레이크 = IN3=IN4
+//     방향에 따라 듀티-속도 곡선이 조금 다를 수 있다(현장 확인).
+//   M2 의 브레이크 레벨은 방향 극성을 따른다(CW 극성 L,L / CCW 극성 H,H). STOP 이 PWM 핀(IN4)만 바꾸고
+//   IN3 는 그대로 두게 하려는 것이다. CCW 구동 중에 L,L 로 가려면 IN3(GPIO, 즉시)와 IN4(PWM, 다음 주기
+//   경계에 반영)를 따로 바꿔야 해서, 그 사이 달리던 방향과 반대로 구동되는 순간이 끼어든다.
+//   DIR 은 정지(브레이크) 중에만 받고 그때 IN 핀 극성을 바꾼다. M2 는 IN3 를 먼저 쓰므로 IN4 가 따라오는
+//   최대 한 PWM 주기(0.5ms) 동안 '새 방향'으로 구동될 수 있다(반대 방향은 아니다).
+//   ponytail: IN3(GPIO)과 IN4(PWM)를 완전히 동시에 바꿀 수는 없다. 신경 쓰이면 PWM_HZ 를 올려 창을 줄인다.
+//
+//   PWM 핀 셋(PA1·PA2·PA5)은 TIM2 한 개를 채널(CH2·CH3·CH1)만 달리해 나눠 쓴다. 한 타이머는 PWM 주파수가
+//   하나뿐이지만 전부 PWM_HZ 라 상관없다. 서보는 Servo 라이브러리가 쓰는 타이머와 겹치면 안 된다.
+//   서보 타이머 근거(STM32duino core 3.0.0 소스에서 확인):
 //   variants/STM32F4xx/F411C(C-E)(U-Y)/variant_BLACKPILL_F411CE.h 가 TIMER_SERVO = TIM11
 //   (TIMER_TONE = TIM10)으로 정하고, libraries/Servo/src/stm32/Servo.cpp 가 그 타이머의 업데이트
 //   인터럽트에서 digitalWrite 로 서보 펄스를 만든다(PB3 에 하드웨어 PWM 을 쓰지 않는다).
-//   TIM11 은 TIM3/TIM5 와 겹치지 않는다.
-//   함정: 이 보드의 핀맵(PeripheralPins_BLACKPILL_F411CE.c)에서 PB0 의 1순위는 TIM1_CH2N, PA3 의 1순위는
-//   TIM2_CH4 다. TIM3_CH3 / TIM5_CH4 는 대체 기능이라 PB0_ALT1 / PA3_ALT1 로 지정해야 잡힌다.
-//   setup() 이 이 겹침(과 PWM 타이머가 없는 핀)을 검사해 걸리면 ERR 배너를 뱉고 START 를 거부한다.
+//   setup() 이 PWM 핀마다 타이머가 있는지, (타이머, 채널)이 겹치지 않는지, 서보 타이머를 쓰지 않는지
+//   검사해 걸리면 ERR 배너를 뱉고 START 를 거부한다.
+//
+//   PWM 핀에는 pinMode() 를 부르면 안 된다. core 3.0.0 의 pinMode() 는 analogWrite 로 잡힌 핀을 만나면
+//   pwm_stop() 으로 그 타이머 객체를 통째로 지워 같은 TIM2 의 나머지 채널 PWM 까지 죽는다
+//   (cores/arduino/wiring_digital.c:38-53, libraries/SrcWrapper/src/stm32/analog.cpp pwm_stop).
+//   그래서 PWM 핀의 정적 L/H 도 analogWrite(0 / 최댓값)로 낸다(putLine 주석). PA4 만 pinMode + digitalWrite.
 //
 // 전원
 //   - 모터 전원 12V 를 모듈의 12V 단자에 넣는다. GND 는 BlackPill 과 반드시 공통으로 묶는다.
 //   - 12V 이하면 모듈의 5V 레귤레이터 점퍼를 그대로 둔다.
-//   - ENA/ENB 점퍼는 반드시 뽑는다. 꽂혀 있으면 EN 이 5V 에 묶여 항상 전속이라 PWM 이 안 먹고,
-//     보드 핀(EN)과 출력끼리 충돌한다.
+//   - ENA/ENB 점퍼는 꽂은 채로 둔다(EN=5V). 이 펌웨어는 EN 을 제어하지 않으니, 뽑으면 EN 이 떠 버린다.
 //   - 브레이크 전류는 L298 데이터시트(7쪽)상 절대 최대 2A 를 넘으면 안 된다. 큰 모터를 달면 확인할 것.
+//   - 데이터시트(7쪽)는 전원을 켜고 끄기 전에 EN 을 L 로 내리라고 권한다. EN 이 5V 고정이라 그럴 수 없다.
 //
 // 3.3V 로직 마진
-//   BlackPill 출력은 3.3V 다. L298 입력(IN, EN)의 High 하한은 2.3V, Low 상한은 1.5V
+//   BlackPill 출력은 3.3V 다. L298 입력(IN)의 High 하한은 2.3V, Low 상한은 1.5V
 //   (데이터시트 ViH 2.3V~VSS, ViL -0.3~1.5V, VSS 4.5~7V)라서 3.3V 직결 구동이 가능하고 High 쪽
 //   여유는 1.0V 다. 레벨시프터는 쓰지 않는다. 모듈 회로(입력단 부품 유무)는 확인하지 못했으므로
-//   실기에서 EN/IN 이 실제로 먹는지 확인할 것.
+//   실기에서 IN 이 실제로 먹는지 확인할 것.
 //
 // PC(Flask)가 USB(CDC)로 한 줄 명령을 보내면 한 줄로 응답한다.
 // 모든 명령 앞에 "M1 "/"M2 " 를 붙여 모터를 지정한다. 프리픽스가 없으면
 // M1 으로 간주한다(단일 모터 시절의 호스트/스크립트 호환).
 //
 //   M1 START            설정된 방향·듀티로 구동(RAMP_MS 동안 램프 가속)   -> OK: RUN | ERR: DISABLED
-//   M1 STOP             브레이크 정지(EN=H, IN1=IN2=L)                    -> OK: STOP
+//   M1 STOP             브레이크 정지(IN 두 핀을 같은 레벨로)              -> OK: STOP
 //   M1 DUTY <pct>       목표 듀티 0~100(실수). 구동 중이면 램프로 반영.     -> OK: DUTY=<pct>
 //                       0 이면 STOP 과 같다. MIN_RUN_DUTY 미만의 0 이 아닌     | ERR: DUTY 범위는 0~100
 //                       값은 MIN_RUN_DUTY 로 올리고 응답에 그 값을 적는다.
 //   M1 DIR CW|CCW       회전 방향. 구동 중이면 거부                        -> OK: DIR=CW | ERR: RUNNING
-//   M1 ENABLE           드라이버 허용(아직 돌지는 않는다)                  -> OK: ENABLED
-//   M1 DISABLE          EN=L, IN=L 프리런 정지. ENABLE 전까지 START 거부    -> OK: DISABLED
+//   M1 ENABLE           START 거부를 푼다(아직 돌지는 않는다)              -> OK: ENABLED
+//   M1 DISABLE          브레이크(STOP 과 같다) + ENABLE 전까지 START 거부    -> OK: DISABLED
+//                       EN 이 5V 고정이라 프리런(토크 해제)은 없다.
 //   M1 STATUS           이 모터 상태 한 줄(DUTY 는 설정값)                 -> OK: STATUS RUN=<0|1> DIR=<CW|CCW>
 //                                                                              DUTY=<pct> EN=<0|1> SERVO=<deg>
 //   SERVO <deg>         분류 게이트 서보 각도 (0~180, 보드에 1개)          -> OK: SERVO=<deg>
@@ -136,23 +159,24 @@ const uint32_t SYSTEM_MEMORY_ADDR = 0x1FFF0000;
 
 // ── 모터 2축 ──────────────────────────────────────────────────────────
 struct Motor {
-  uint32_t enPin, in1, in2;
+  uint32_t in[2];     // L298 IN1,IN2 (M1) 또는 IN3,IN4 (M2). EN 은 점퍼로 5V 고정이라 보드 핀이 없다.
+  bool pwm[2];        // 그 핀을 하드웨어 PWM(analogWrite)으로 쓰는가. false 는 정적 L/H 만(GPIO). in[1] 은 항상 true.
   float dutyTarget;   // 설정한 목표 듀티(%). START·DUTY 가 이 값을 향해 램프한다. STATUS 의 DUTY.
-  float dutyNow;      // 지금 EN 에 나가는 듀티(%). 구동 중에만 의미가 있다.
-  bool dirCw;         // CW = IN1=H, IN2=L. 실물 진행 방향과 반대면 모터 선을 바꾸거나 호스트에서 뒤집는다.
+  float dutyNow;      // 지금 내보내는 듀티(%). 구동 중에만 의미가 있다.
+  bool dirCw;         // 방향 정의는 위 '구동 방식'. 실물 진행 방향과 반대면 모터 선을 바꾸거나 호스트에서 뒤집는다.
   bool running;
-  bool enabled;       // false = 드라이버 해제(프리런). START 를 거부한다.
+  bool enabled;       // false = START 거부 플래그. 물리 상태와는 무관하다(정지는 늘 브레이크, 프리런 없음).
 };
 
 const int NUM_MOTORS = 2;
 Motor motors[NUM_MOTORS] = {
-  // en,       in1, in2, dutyTarget,   dutyNow, dirCw, running, enabled
-  { PB0_ALT1,  PA1, PA2, DEFAULT_DUTY, 0, true, false, true },  // M1 feed (A 채널, TIM3_CH3)
-  { PA3_ALT1,  PA6, PA7, DEFAULT_DUTY, 0, true, false, true },  // M2 work (B 채널, TIM5_CH4)
+  // in[0], in[1]   pwm[0], pwm[1]   dutyTarget,   dutyNow, dirCw, running, enabled
+  { { PA1, PA2 },  { true,  true },  DEFAULT_DUTY, 0, true, false, true },  // M1 feed (A 채널): TIM2_CH2, TIM2_CH3
+  { { PA4, PA5 },  { false, true },  DEFAULT_DUTY, 0, true, false, true },  // M2 work (B 채널): PA4 는 GPIO, TIM2_CH1
 };
 
 // 분류 게이트 서보(보드에 1개). PB3 을 Servo 라이브러리(전용 타이머 인터럽트)로 구동한다 —
-// 타이머는 TIM11 이고 ENx 의 TIM3/TIM5 와 겹치지 않는다(위 배선 주석, setup() 검사).
+// 타이머는 TIM11 이고 모터 PWM 의 TIM2 와 겹치지 않는다(위 배선 주석, setup() 검사).
 const uint32_t SERVO_PIN = PB3;
 Servo gate;
 int servoDeg = 90;              // 부팅 기본값: 중립
@@ -167,49 +191,74 @@ unsigned long lastRampMs = 0;   // 램프를 마지막으로 갱신한 시각
 bool pwmConflict = false;       // setup() 의 핀·타이머 검사 결과
 
 // ── 핀·타이머 검사 ────────────────────────────────────────────────────
-// ENx 핀의 PWM 타이머. 타이머가 없는 핀이면 nullptr — analogWrite 가 조용히 on/off 디지털
-// 출력으로 떨어지는 핀이다.
-TIM_TypeDef *timerOf(uint32_t pin) {
-  return (TIM_TypeDef *)pinmap_peripheral(digitalPinToPinName(pin), PinMap_TIM);
+// 이 핀이 하드웨어 PWM 으로 잡을 타이머와 채널. 타이머가 없는 핀이면 timer 가 nullptr 이다
+// (analogWrite 는 그런 핀을 조용히 on/off 디지털 출력으로 떨어뜨린다).
+struct PwmSlot { TIM_TypeDef *timer; uint32_t channel; };
+
+PwmSlot slotOf(uint32_t pin) {
+  PinName pn = digitalPinToPinName(pin);
+  return { (TIM_TypeDef *)pinmap_peripheral(pn, PinMap_TIM), STM_PIN_CHANNEL(pinmap_function(pn, PinMap_TIM)) };
 }
 
-// ENx 가 모두 PWM 타이머를 갖고, 서로·서보 타이머(TIMER_SERVO)와 겹치지 않는가.
+// PWM 으로 쓰는 IN 핀(pwm[])이 모두 타이머를 갖고, (타이머, 채널)을 서로 나눠 쓰지 않고, 서보 타이머
+// (TIMER_SERVO)를 쓰지 않는가. 타이머가 같아도 채널만 다르면 된다 — 전부 PWM_HZ 라 주파수가 같다.
 bool pwmPinsOk() {
+  PwmSlot seen[2 * NUM_MOTORS];
+  int n = 0;
   for (int i = 0; i < NUM_MOTORS; i++) {
-    TIM_TypeDef *t = timerOf(motors[i].enPin);
-    if (t == nullptr || t == TIMER_SERVO) return false;
-    for (int j = 0; j < i; j++) {
-      if (timerOf(motors[j].enPin) == t) return false;
+    if (!motors[i].pwm[1]) return false;      // 구동 방식이 in[1] 을 PWM 핀으로 가정한다
+    for (int k = 0; k < 2; k++) {
+      if (!motors[i].pwm[k]) continue;
+      PwmSlot s = slotOf(motors[i].in[k]);
+      if (s.timer == nullptr || s.timer == TIMER_SERVO) return false;
+      for (int j = 0; j < n; j++) {
+        if (seen[j].timer == s.timer && seen[j].channel == s.channel) return false;
+      }
+      seen[n++] = s;
     }
   }
   return true;
 }
 
 // ── 헬퍼 ──────────────────────────────────────────────────────────────
-// EN 핀에 듀티(%)를 낸다. 0 = 항상 LOW, 100 = 항상 HIGH(PWM_MAX 에서 CCR = ARR+1).
-// 하드웨어 PWM 은 한 번 걸면 analogWrite 로 듀티만 바꿔도 카운터를 리셋하지 않는다.
-void setEn(const Motor &m, float pct) {
-  analogWrite(m.enPin, (int)(pct * PWM_MAX / 100.0f + 0.5f));
+// IN 한 줄에 0(L)~100(H)% 를 낸다. PWM 핀은 정적 L/H 도 analogWrite 로 낸다: 최댓값은 CCR = ARR+1 이라
+// 상시 HIGH, 0 은 상시 LOW 다(libraries/SrcWrapper/src/HardwareTimer.cpp setCaptureCompare). 이 핀에
+// digitalWrite 만 부르면 핀이 AF(타이머) 모드라 출력이 안 바뀌고, pinMode() 를 부르면 위 배선 주석대로
+// 타이머가 지워진다. 한 번 걸린 하드웨어 PWM 은 analogWrite 로 듀티만 바꿔도 카운터를 리셋하지 않는다.
+// 새 값은 다음 PWM 주기 경계(최대 1/PWM_HZ)에 반영된다. 타이머가 없는 핀(M2 의 PA4)은 0 또는 100 만 온다.
+void putLine(uint32_t pin, bool pwm, float pct) {
+  if (pwm) analogWrite(pin, (int)(pct * PWM_MAX / 100.0f + 0.5f));
+  else     digitalWrite(pin, pct >= 50.0f ? HIGH : LOW);
 }
 
-// 0% 에서 출발. 순서가 중요하다: 브레이크(EN=H) 상태에서 IN 을 먼저 바꾸면 순간 전속으로 구동된다.
-// EN 을 먼저 내린다(CCR 은 다음 PWM 주기 경계에 반영돼 최대 한 주기, 0.5ms 가 걸린다).
+// 이 모터의 두 IN 에 낼 값을 정해 쓴다. duty 0 이 브레이크다(구동/브레이크 PWM 의 낮은 구간이 브레이크).
+// in[0] 을 먼저 쓴다 — M2 에서 GPIO(PA4)가 즉시 바뀌고 PWM(PA5)이 뒤따르게 하는 순서다(위 '구동 방식').
+void drive(const Motor &m, float duty) {
+  float a, b;
+  if (m.pwm[0]) {                          // M1: 두 핀 다 PWM — 방향 쪽 핀에 PWM, 반대 핀은 L
+    a = m.dirCw ? duty : 0;
+    b = m.dirCw ? 0 : duty;
+  } else {                                 // M2: in[0] 은 방향별 정적 극성, PWM 은 in[1] 하나로(CCW 는 반전)
+    a = m.dirCw ? 0 : 100;
+    b = m.dirCw ? duty : 100 - duty;
+  }
+  putLine(m.in[0], m.pwm[0], a);
+  putLine(m.in[1], m.pwm[1], b);
+}
+
+// 출발: 먼저 브레이크를 확인(drive 0)한 뒤 0% 에서 램프를 시작한다. 방향 핀은 DIR 가 정지 중에 이미 바꿔 놨다.
 void beginRun(Motor &m) {
-  setEn(m, 0);
-  digitalWrite(m.in1, m.dirCw ? HIGH : LOW);
-  digitalWrite(m.in2, m.dirCw ? LOW : HIGH);
+  drive(m, 0);
   m.dutyNow = 0;
   m.running = true;
 }
 
-// 정지. 활성 상태면 브레이크(IN1=IN2=L 을 먼저, 그다음 EN=H), 해제 상태면 프리런(EN=L, IN=L).
+// 정지 = 브레이크. EN 이 5V 고정이라 프리런은 없다. DISABLE 도 같은 브레이크이고 START 거부 플래그만 더한다.
 // ponytail: 감속 램프 없이 즉시 브레이크 — 부품이 넘어지면 정지에도 감속 램프를 넣는다.
 void stopMotor(Motor &m) {
   m.running = false;
   m.dutyNow = 0;
-  digitalWrite(m.in1, LOW);
-  digitalWrite(m.in2, LOW);
-  setEn(m, m.enabled ? 100 : 0);
+  drive(m, 0);
 }
 
 void stopAll() {
@@ -275,13 +324,13 @@ void rampTick() {
       m.dutyNow += m.dutyTarget * dt / RAMP_MS;
       if (m.dutyNow > m.dutyTarget) m.dutyNow = m.dutyTarget;
     }
-    setEn(m, m.dutyNow);
+    drive(m, m.dutyNow);
   }
 }
 
 void printStatus(const Motor &m) {
   // 한 줄. 호스트(backend/core/conveyor.py)가 이 형식을 파싱하므로 키·순서를 바꾸면 호스트도 같이 본다.
-  // DUTY 는 설정(목표) 듀티다. 램프 중인 현재값이 아니다.
+  // DUTY 는 설정(목표) 듀티다. 램프 중인 현재값이 아니다. EN 은 START 허용 여부다(드라이버 출력과 무관).
   Serial.print("OK: STATUS RUN=");  Serial.print(m.running ? 1 : 0);
   Serial.print(" DIR=");            Serial.print(m.dirCw ? "CW" : "CCW");
   Serial.print(" DUTY=");           Serial.print(m.dutyTarget, 1);
@@ -331,18 +380,18 @@ void handleCommand(int mi, const String& cmd) {
 
     // 달리는 중 반전은 거부한다. 부하 걸린 상태에서 즉시 반전하면 모터·부품에 충격이다.
     if (m.running) { Serial.println("ERR: RUNNING"); return; }
-    m.dirCw = wantCw;                     // IN 핀은 START 가 방향을 읽어 건다(정지 중에는 브레이크 유지)
+    m.dirCw = wantCw;
+    drive(m, 0);                          // 정지(브레이크) 중에 방향 핀 극성을 바꿔 둔다. 그다음 START 의 램프가 올린다
     Serial.print("OK: DIR="); Serial.println(m.dirCw ? "CW" : "CCW");
 
   } else if (cmd == "ENABLE") {
-    // 풀려 있던 드라이버를 브레이크 상태(부팅 상태와 같다)로 되돌린다. 아직 돌지는 않는다.
-    if (!m.enabled) { m.enabled = true; stopMotor(m); }
+    m.enabled = true;                     // START 거부를 푼다. 물리 상태는 이미 브레이크라 손대지 않는다
     Serial.println("OK: ENABLED");
 
   } else if (cmd == "DISABLE") {
-    // EN=L, IN=L 프리런. 토크가 사라져 벨트를 손으로 움직일 수 있다.
+    // EN 이 5V 고정이라 프리런(토크 해제)은 없다. STOP 과 같은 브레이크에 START 거부 플래그만 더한다.
     m.enabled = false;
-    stopMotor(m);                         // enabled=false 이므로 브레이크가 아니라 프리런
+    stopMotor(m);
     Serial.println("OK: DISABLED");
 
   } else if (cmd.startsWith("SERVO ")) {
@@ -401,10 +450,12 @@ void setup() {
   pwmConflict = !pwmPinsOk();
 
   // 부팅 상태: 모든 모터 정지(브레이크), enabled=true, 방향 CW, 목표 듀티 DEFAULT_DUTY.
+  // PWM 핀에는 pinMode 를 쓰지 않는다(analogWrite 가 핀을 잡고, pinMode 는 타이머를 지운다 — 위 배선 주석).
   for (int i = 0; i < NUM_MOTORS; i++) {
-    pinMode(motors[i].in1, OUTPUT);
-    pinMode(motors[i].in2, OUTPUT);
-    stopMotor(motors[i]);   // EN 핀은 analogWrite 가 PWM 핀으로 잡는다
+    for (int k = 0; k < 2; k++) {
+      if (!motors[i].pwm[k]) pinMode(motors[i].in[k], OUTPUT);
+    }
+    stopMotor(motors[i]);
   }
 
   // 서보는 여기서 attach 하지 않는다(gateAttached 주석 참조). SERVO 명령이 올 때 잡는다.

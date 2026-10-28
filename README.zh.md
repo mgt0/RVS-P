@@ -142,18 +142,18 @@ OMX_SIMULATE=0 python run.py
 
 | L298N | M1（供料，A） | M2（作业，B） |
 |---|---|---|
-| ENA/ENB（PWM） | **PB0**（固件常量 `PB0_ALT1`，TIM3_CH3） | PA3（TIM5_CH4） |
-| IN1/IN3 | PA1 | PA6 |
-| IN2/IN4 | PA2 | PA7 |
+| IN1/IN3 | PA1（TIM2_CH2） | PA4（无定时器，只能作 GPIO 固定输出） |
+| IN2/IN4 | PA2（TIM2_CH3） | PA5（TIM2_CH1） |
+| ENA/ENB | 不接板子（插着跳线，EN 固定为 5V） | 不接板子（插着跳线，EN 固定为 5V） |
 
-- **不要使用 PA0。** 它是板载 KEY 按键，不能作为输出（所以 M1 的 ENA 用 PB0）。
+- 这是用户的实际接线（"A1、A2、A4、A5"）。A1/A2/A4/A5 与 IN1~IN4 的对应是假设；方向反了就对调电机线，或使用 `DIR`。
 - 电机电源 12V 接 L298N 的 12V 端子，GND 与 BlackPill 共地。
-- **拔掉 ENA/ENB 跳线。** 插着时始终全速，PWM 不起作用。
-- 建议在 EN、IN 引脚加 10kΩ 下拉电阻 —— 复位和 DFU 期间引脚悬空，电机可能抖动。
+- **ENA/ENB 跳线保持插着**（EN 固定为 5V，板上没有对应引脚）。速度由 IN 引脚上的 PWM 产生：M1 加在所选方向的 IN 上；PA4（M2 的 IN3）没有定时器，所以 M2 只在 PA5（IN4）上输出 PWM（反转时用反相 PWM）。EN 固定为高电平，因此没有自由滑行，停止就是刹车。
+- 建议在 IN 引脚加 10kΩ 下拉电阻 —— 复位和 DFU 期间引脚悬空，电机可能抖动。
 - 固件常量（都需要现场实测）：`MIN_RUN_DUTY` 20（电机真正能转的最低占空比，临时值）、PWM 2kHz/10bit、`RAMP_MS` 300。
 - **主机看门狗。** 电机运行中固件 2 秒（`HOST_TIMEOUT_MS`）收不到任何一行就停掉所有电机；端口被关闭（DTR 拉低）时立即停止。
   只要有一条皮带在转，服务器就用每个端口一个线程每 0.5 秒发一次 `PING`（与命令共用同一把锁）。服务器崩溃或 `release` 后皮带会停。
-- `STOP` 为刹车，`DISABLE` 为自由滑行停止。`DISABLE`（包括紧急停止）之后固件会拒绝 `START`，直到 `ENABLE`（"驱动器上电"）。
+- `STOP` 与 `DISABLE` 都是刹车（没有自由滑行）。`DISABLE`（包括紧急停止）之后固件会拒绝 `START`，直到 `ENABLE`（"驱动器上电"）。
   `DUTY 0` 等同于 `STOP`，设定速度保留。默认速度为 `config.yaml` 的 `conveyors.*.default_duty`（默认 40），连接后在第一次 `START` 之前发送一次。
 - `config.yaml` 里残留的旧键 `conveyors.lm`、`stroke_mm`、`mm_per_rev`、`cycle.belt_rpm` 只记录警告并被忽略。
 

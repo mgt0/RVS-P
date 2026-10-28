@@ -153,7 +153,7 @@ class HardwareHub:
 
         belts: dict = {}
         for name, ctrl in self.conveyors.items():
-            # STOP(브레이크) 뒤 DISABLE(드라이버 차단, 프리런)까지 간다. STOP 만 하면
+            # STOP(브레이크) 뒤 DISABLE(드라이버 차단, START 거부)까지 간다. STOP 만 하면
             # 드라이버가 켜진 채라 다음 START 가 그대로 받아들여진다 —
             # '전부 off' 가 아니다. 앞 단계가 실패해도 뒤 단계는 반드시 시도한다.
             outcome = []

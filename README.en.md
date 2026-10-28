@@ -151,19 +151,19 @@ The LM guide (M3) is gone.
 
 | L298N | M1 (feed, A) | M2 (work, B) |
 |---|---|---|
-| ENA/ENB (PWM) | **PB0** (firmware constant `PB0_ALT1`, TIM3_CH3) | PA3 (TIM5_CH4) |
-| IN1/IN3 | PA1 | PA6 |
-| IN2/IN4 | PA2 | PA7 |
+| IN1/IN3 | PA1 (TIM2_CH2) | PA4 (no timer, static GPIO output only) |
+| IN2/IN4 | PA2 (TIM2_CH3) | PA5 (TIM2_CH1) |
+| ENA/ENB | not wired to the board (jumper fitted, EN tied to 5 V) | not wired to the board (jumper fitted, EN tied to 5 V) |
 
-- **Do not use PA0.** It is the onboard KEY button and must not be an output (that is why M1 ENA is PB0).
+- This is the user's actual wiring ("A1, A2, A4, A5"). The mapping of A1/A2/A4/A5 to IN1-IN4 is an assumption; if a belt runs the wrong way, swap the motor leads or use `DIR`.
 - Motor supply 12 V goes to the L298N 12 V terminal; tie GND to the BlackPill's GND.
-- **Remove the ENA/ENB jumpers.** With them fitted the motor is always at full speed and PWM has no effect.
-- 10 kΩ pull-downs on the EN and IN pins are recommended — the pins float during reset/DFU and the motors can jerk.
+- **Leave the ENA/ENB jumpers fitted** (EN tied to 5 V, no board pin). Speed comes from PWM on the IN pins: M1 puts it on the IN of the chosen direction; PA4 (M2 IN3) has no timer, so M2 puts PWM on PA5 (IN4) only (inverted PWM for reverse). With EN fixed high there is no free-run and a stop is a brake.
+- 10 kΩ pull-downs on the IN pins are recommended — the pins float during reset/DFU and the motors can jerk.
 - Firmware constants (all need on-site measurement): `MIN_RUN_DUTY` 20 (lowest duty at which the motor really turns, provisional), PWM 2 kHz / 10 bit, `RAMP_MS` 300.
 - **Host watchdog.** If a motor is running and the firmware receives no line for 2 s (`HOST_TIMEOUT_MS`) it stops all
   motors, and it stops immediately when the port is closed (DTR drop). While any belt runs the server sends `PING`
   every 0.5 s from one thread per port (same lock as commands). If the server dies or the port is released, the belts stop.
-- `STOP` brakes; `DISABLE` free-runs to a stop. After `DISABLE` (including an emergency stop) the firmware refuses
+- `STOP` and `DISABLE` both brake (no free-run). After `DISABLE` (including an emergency stop) the firmware refuses
   `START` until `ENABLE` ('Enable drivers'). `DUTY 0` equals `STOP` and the set speed is kept. The default speed is
   `conveyors.*.default_duty` in `config.yaml` (default 40), sent once before the first `START` after connecting.
 - Old `conveyors.lm`, `stroke_mm`, `mm_per_rev` and `cycle.belt_rpm` keys in `config.yaml` are ignored with a warning.
