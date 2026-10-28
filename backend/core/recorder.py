@@ -102,7 +102,22 @@ class Recorder:
             }
 
     # ------------------------------------------------------------------ 제어
-    def start(self, episode_id: str, object_id: str, label: str, defect_type: str | None) -> dict:
+    def start(
+        self,
+        episode_id: str,
+        object_id: str,
+        label: str,
+        defect_type: str | None,
+        *,
+        extra: dict | None = None,
+        classify: bool = True,
+    ) -> dict:
+        """녹화 시작.
+
+        extra: metadata.json 에 병합할 키(시연 세션의 kind/task 등). 기본 키와 겹치면 이긴다.
+        classify=False: classification/ 분류 이미지를 만들지 않는다. 시연(ACT 학습용) 에피소드는
+        양품/불량 판정 데이터가 아니라서, 분류 폴더에 섞이면 CNN 학습셋이 오염된다.
+        """
         label, defect_type = validate_label(label, defect_type)
         episode_id = validate_id(episode_id, "episode_id")
         object_id = validate_id(object_id, "object_id")
@@ -129,12 +144,12 @@ class Recorder:
                 started_at_epoch=time.time(),
                 # monotonic 기준 시각을 epoch 로 되돌리기 위한 오프셋
                 monotonic_offset=time.time() - time.monotonic(),
+                extra=dict(extra or {}),
             )
 
-            writers: list[DatasetWriter] = [
-                EpisodeWriter(self._cfg.root, jpeg_quality=self._cfg.jpeg_quality),
-                ClassificationWriter(self._cfg.root, jpeg_quality=95),
-            ]
+            writers: list[DatasetWriter] = [EpisodeWriter(self._cfg.root, jpeg_quality=self._cfg.jpeg_quality)]
+            if classify:
+                writers.append(ClassificationWriter(self._cfg.root, jpeg_quality=95))
             for writer in writers:
                 writer.open(meta)   # 실패 시(중복 ID 등) 여기서 예외 → 상태는 IDLE 유지
 
@@ -157,7 +172,13 @@ class Recorder:
             logger.info("녹화 시작: episode=%s object=%s label=%s", episode_id, object_id, label)
             return self.status()
 
-    def stop(self) -> dict:
+    def stop(self, *, discard: bool = False) -> dict:
+        """녹화 정지·저장. discard=True 면 저장하지 않고 에피소드 폴더를 지운다.
+
+        discard 는 사람이 일부러 버리는 경우(시연 세션의 '버리고 다시')다. abort() 와 달리
+        샘플러·라이터 스레드를 끝까지 정리한 뒤 지우므로 곧바로 다시 start() 해도 낡은 스레드가
+        새 녹화를 건드리지 못하고, last_error 도 남기지 않는다(오류가 아니라 의도다).
+        """
         with self._lock:
             if self._state != RecordingState.RECORDING:
                 raise RecordingStateError(
@@ -182,12 +203,15 @@ class Recorder:
             }
             try:
                 for writer in self._writers:
-                    writer.close(self._meta, stats)
+                    if discard:
+                        writer.abort()
+                    else:
+                        writer.close(self._meta, stats)
             finally:
                 self._writers = []
                 self._state = RecordingState.IDLE
 
-            logger.info("녹화 종료: %s (%d frames)", self._meta.episode_id, self._frame_count)
+            logger.info("녹화 %s: %s (%d frames)", "폐기" if discard else "종료", self._meta.episode_id, self._frame_count)
             return self.status()
 
     def abort(self, reason: str) -> None:

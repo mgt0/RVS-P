@@ -33,7 +33,7 @@ from pathlib import Path
 # 기존 안내 메시지(`lerobot 이 설치되어 있지 않습니다`)로 처리된다.
 try:
     import torch  # noqa: F401
-except ImportError:
+except (ImportError, OSError):   # OSError: OS 정책이 torch DLL 을 막은 경우(WinError 4551)
     pass
 
 import cv2
@@ -101,7 +101,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="에피소드 → LeRobot 데이터셋 변환")
     parser.add_argument("--repo-id", default="omx/scan", help="LeRobot repo id")
     parser.add_argument("--out", default=None, help="출력 루트(기본: lerobot 캐시)")
-    parser.add_argument("--task", default=None, help="자연어 태스크 설명(기본: 라벨 기반 자동)")
+    parser.add_argument("--task", default=None, help="자연어 태스크 설명(기본: 에피소드 metadata 의 task, 없으면 라벨 기반 자동)")
     args = parser.parse_args()
 
     try:
@@ -155,7 +155,8 @@ def main() -> None:
             # 카메라 구성이 다른 에피소드를 섞으면 feature 스키마가 깨진다.
             print(f"  건너뜀 {ep_path.name}: 카메라 구성 불일치 ({', '.join(ep_cams)})")
             continue
-        task = args.task or f"scan a {meta['label']} object"
+        # 시연 세션(kind=demo)은 에피소드마다 사람이 적은 task 를 metadata.json 에 남긴다.
+        task = args.task or meta.get("task") or f"scan a {meta['label']} object"
 
         n = 0
         for frame, _ in iter_frames(ep_path, cams, num_joints):

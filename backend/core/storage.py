@@ -312,7 +312,10 @@ class DatasetIndex:
                 meta.get("defect_type") if defect_type is None else defect_type,
             )
 
-            self._move_classification(meta["label"], meta["object_id"], new_label, new_object)
+            # 시연(kind=demo) 에피소드의 label 은 Recorder 를 통과시키려 채운 자리표시다. 분류 이미지를 만든 적이
+            # 없는데 같은 (label, object_id) 폴더를 옮기면 다른 에피소드가 남긴 분류 이미지가 사라진다.
+            if meta.get("kind") != "demo":
+                self._move_classification(meta["label"], meta["object_id"], new_label, new_object)
             meta.update(object_id=new_object, label=new_label, defect_type=new_defect)
             meta_file.write_text(
                 json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -328,12 +331,15 @@ class DatasetIndex:
             meta = json.loads(meta_file.read_text(encoding="utf-8"))
             shutil.rmtree(target)
             logger.warning("에피소드 삭제: %s", target)
+            if meta.get("kind") == "demo":    # 시연 에피소드는 분류 이미지를 만든 적이 없다(update 주석 참고)
+                return
 
             # 같은 (label, object_id) 를 참조하는 형제 에피소드가 남아 있으면
             # 분류 이미지는 공유 자산이라 둔다. 마지막 참조가 사라졌으면 함께
             # 지운다 — 남겨두면 3D 검사 드롭다운에 유령 물체로 계속 뜬다.
+            # 시연 에피소드는 참조로 세지 않는다 — 자리표시 라벨이 분류 이미지를 붙잡아 둔다.
             still_referenced = any(
-                m["label"] == meta["label"] and m["object_id"] == meta["object_id"]
+                m["label"] == meta["label"] and m["object_id"] == meta["object_id"] and m.get("kind") != "demo"
                 for m in self.list()
             )
             if not still_referenced:
