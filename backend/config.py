@@ -7,6 +7,7 @@ config.yaml 을 dataclass 로 역직렬화한다. dict 를 그대로 들고 다�
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 from dataclasses import dataclass, field
@@ -14,13 +15,15 @@ from pathlib import Path
 
 import yaml
 
+logger = logging.getLogger(__name__)
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 
 # 카메라 순서는 저장 폴더/파케이 컬럼 순서와 직결되므로 상수로 고정한다.
-# cam1~cam5 는 물리 배치가 아니라 슬롯 번호다. 각 슬롯이 물체를 어느 방향에서
+# cam2~cam5 는 물리 배치가 아니라 슬롯 번호다. 각 슬롯이 물체를 어느 방향에서
 # 보는지는 reconstruct3d.VIEW_DIRECTIONS 가 정한다(3D 재구성이 그 값을 쓴다).
-CAMERA_ORDER: tuple[str, ...] = ("cam1", "cam2", "cam3", "cam4", "cam5", "global")
+CAMERA_ORDER: tuple[str, ...] = ("cam2", "cam3", "cam4", "cam5")
 DEFECT_TYPES: tuple[str, ...] = ("scratch", "dent", "discoloration", "crack", "other")
 
 
@@ -132,31 +135,20 @@ class ConveyorConfig:
     timeout_sec: float = 2.0
     # 대시보드에 보여줄 사람용 이름 ("공급 벨트" 등). 비면 키 이름을 쓴다.
     label: str = ""
-    # 보드 하나(BlackPill 3축 펌웨어)가 스텝모터 3개(M1/M2/M3)를 물고 있다. 같은 port 를
-    # 쓰는 항목들이 이 번호로 자기 모터를 지정한다(1~3). 0 = 프리픽스 없음(단일 모터 호환).
+    # 보드 하나(BlackPill + HW-095 L298N)가 DC 모터 2개(M1=A 채널, M2=B 채널)를 물고 있다. 같은 port 를
+    # 쓰는 항목들이 이 번호로 자기 모터를 지정한다(1~2). 0 = 프리픽스 없음(단일 모터 호환).
     motor: int = 0
-    # 소프트 리밋(LM 가이드처럼 왕복하는 축용). 사람은 mm 로 생각하므로 mm 로 적고,
-    # 펌웨어에 보낼 회전수는 limit_rev 가 환산한다.
-    #   stroke_mm  : 원점부터 갈 수 있는 거리(mm). 0 이면 리밋 없음(벨트는 무한 회전).
-    #   mm_per_rev : 모터 1회전당 이송(mm). 볼스크류면 리드, 벨트 구동이면 풀리 원주.
-    # 리밋 스위치가 없어 위치는 펌웨어가 보낸 펄스로 세므로, 전원을 켤 때마다
-    # 축을 한쪽 끝에 두고 '원점 설정'을 눌러 기준을 잡아야 한다.
-    stroke_mm: float = 0.0
-    mm_per_rev: float = 0.0
-
-    @property
-    def limit_rev(self) -> float:
-        """펌웨어가 받는 단위(회전). 둘 중 하나라도 0 이면 리밋을 걸지 않는다."""
-        if not (self.stroke_mm and self.mm_per_rev):
-            return 0.0
-        return self.stroke_mm / self.mm_per_rev
+    # 속도의 기본값(PWM 듀티 %, 0 초과 100 이하). 엔코더가 없어 RPM 을 모르므로 속도는 듀티로만 정한다.
+    # 연결을 새로 연 뒤 첫 START 전에 한 번 펌웨어에 보낸다(core/conveyor.py _sync_duty).
+    # 0 은 안 된다 — 펌웨어에서 DUTY 0 은 STOP 이라 속도를 정하지 못한다.
+    default_duty: float = 40.0
 
 
 @dataclass(frozen=True)
 class CycleConfig:
     """자동 사이클(집기 → 이송 → 검사 → 분류) 손잡이. 기본값은 출발점일 뿐이다 — 현장에서 재서 맞춘다.
 
-    시간은 전부 초다. 벨트 이송 거리는 벨트 속도(belt_rpm)와 시간의 곱이라 둘이 한 쌍으로 움직인다.
+    시간은 전부 초다. 벨트 이송 거리는 벨트 속도(belt_duty)와 시간의 곱이라 둘이 한 쌍으로 움직인다.
     """
 
     # 픽 동작 = scripts/to_waypoints.py 산출 JSON. pick_checkpoint 가 있으면 그쪽이 이긴다.
@@ -168,7 +160,7 @@ class CycleConfig:
     pick_settle_sec: float = 1.0
     belt: str = "work"            # 물체를 싣는 벨트 키(config conveyors 의 키)
     belt_dir: str = "cw"
-    belt_rpm: float = 10.0
+    belt_duty: float = 40.0       # 벨트 속도(PWM 듀티 %, 0 초과 100 이하). 사이클이 시작할 때 set_duty 로 정한다
     to_scan_sec: float = 3.0
     settle_sec: float = 0.5
     resolution: int = 96
@@ -304,23 +296,37 @@ def load_config(path: str | Path | None = None) -> AppConfig:
 
     # conveyors(복수) 가 우선. 없으면 예전 단일 conveyor 키를 "main" 으로 승격 —
     # 기존 config.yaml 이 수정 없이 계속 동작해야 한다.
-    def _conveyor(node: dict) -> ConveyorConfig:
+    def _conveyor(name: str, node: dict) -> ConveyorConfig:
+        # 스텝모터·LM 가이드 시절의 키. 사용자 로컬 config.yaml 에 남아 있어도 서버는 떠야 하므로 경고만 남기고 무시한다.
+        for old in ("stroke_mm", "mm_per_rev"):
+            if old in node:
+                logger.warning("config.yaml conveyors.%s.%s: LM 가이드와 함께 사라진 키라 무시합니다. 지워도 됩니다.", name, old)
+        raw_duty = node.get("default_duty", ConveyorConfig.default_duty)
+        try:
+            default_duty = float(raw_duty)
+        except (TypeError, ValueError):
+            raise ValueError(f"conveyors.{name}.default_duty 는 숫자여야 합니다: {raw_duty!r}") from None
+        if not (math.isfinite(default_duty) and 0.0 < default_duty <= 100.0):
+            raise ValueError(f"conveyors.{name}.default_duty 는 0 초과 100 이하(%)만 허용합니다: {raw_duty!r}")
         return ConveyorConfig(
             port=node.get("port") or "",
             baudrate=int(node.get("baudrate", 115200)),
             timeout_sec=float(node.get("timeout_sec", 2.0)),
             label=node.get("label") or "",
             motor=int(node.get("motor", 0)),
-            stroke_mm=float(node.get("stroke_mm", 0.0)),
-            mm_per_rev=float(node.get("mm_per_rev", 0.0)),
+            default_duty=default_duty,
         )
 
     conveyors: dict[str, ConveyorConfig] = {}
     if raw.get("conveyors"):
         for name, node in raw["conveyors"].items():
-            conveyors[name] = _conveyor(node or {})
+            if name == "lm":
+                # LM 가이드(M3)는 하드웨어에서 사라졌다. 옛 절이 남아 있어도 서버는 떠야 한다.
+                logger.warning("config.yaml conveyors.lm: LM 가이드가 제거되어 이 절을 무시합니다. 지워도 됩니다.")
+                continue
+            conveyors[name] = _conveyor(name, node or {})
     else:
-        conveyors["main"] = _conveyor(raw.get("conveyor") or {})
+        conveyors["main"] = _conveyor("main", raw.get("conveyor") or {})
 
     return AppConfig(
         server=server, safety=safety, recording=recording,
@@ -366,6 +372,8 @@ def _cycle(node: dict) -> CycleConfig:
         raise ValueError("cycle.belt 는 config 의 conveyors 키(예: work)여야 합니다.")
     if belt_dir not in ("cw", "ccw"):
         raise ValueError(f"cycle.belt_dir 는 'cw' 또는 'ccw' 여야 합니다: {node.get('belt_dir')!r}")
+    if "belt_rpm" in node:      # 엔코더 없는 DC 모터가 되면서 사라진 키. 옛 config.yaml 이 서버를 죽이지 않게 경고만 남긴다
+        logger.warning("config.yaml cycle.belt_rpm: DC 모터로 바뀌어 무시합니다. cycle.belt_duty(PWM 듀티 %%, 기본 %g)를 쓰세요.", base.belt_duty)
     return CycleConfig(
         pick_waypoints=path("pick_waypoints") or base.pick_waypoints,
         pick_checkpoint=path("pick_checkpoint"),
@@ -374,7 +382,7 @@ def _cycle(node: dict) -> CycleConfig:
         pick_settle_sec=num("pick_settle_sec", 0.0, 60.0),      # 0 이면 기다리지 않는다
         belt=belt,
         belt_dir=belt_dir,
-        belt_rpm=num("belt_rpm", 0.0, lo_open=True),
+        belt_duty=num("belt_duty", 0.0, 100.0, lo_open=True),     # 0 은 DUTY 0 = STOP 이라 벨트가 서 있다
         to_scan_sec=num("to_scan_sec", 0.0, 300.0, lo_open=True),     # 상한은 단위를 잘못 적은 값(ms 로 3000)을 거르려는 것
         settle_sec=num("settle_sec", 0.0, 3.0),         # /api/scan/capture 와 같은 상한
         resolution=num("resolution", 16, 96, whole=True),   # /api/scan/capture 와 같은 범위

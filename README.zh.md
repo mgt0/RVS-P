@@ -14,7 +14,7 @@
 ![PRs welcome](https://img.shields.io/badge/PRs-welcome-ec4899)
 
 **机器人·视觉一体化产品检测平台。** 通过模仿学习（LeRobot ACT）学会动作的机械臂把产品放上传送带，
-传送带停止后由 5 台相机从侧面和底部拍摄，重建 3D 形状，并与标准 CAD（STL）模型比较、标出偏差部位。
+传送带停止后由 4 台相机从侧面和斜上方拍摄，重建 3D 形状，并与标准 CAD（STL）模型比较、标出偏差部位。
 机器人、相机与传送带都在同一个 Web 仪表盘中操作。
 
 面向 ROBOTIS OMX-L（主臂）/ OMX-F（从臂）遥操作与 5 相机扫描数据采集的仪表盘。
@@ -64,7 +64,7 @@ OMX_SIMULATE=0 python run.py
 | 界面 | 功能 |
 |---|---|
 | 概览 | 工位示意图、告警、相机 fps、机械臂关节、同步偏差、数据准备度、最近一次检测拍摄 |
-| 设备控制 | 三轴传送带（速度·方向·闸门·LM 位置）、遥操作、回零、相机实时画面 |
+| 设备控制 | 双皮带传送带（速度 %·方向·闸门）、遥操作、回零、相机实时画面 |
 | 采集 | 示范录制会话（用于 ACT）、检测样本拍摄与标注、episode 管理 |
 | 训练 | 跟读 LeRobot 训练日志（loss·l1·kld·grdn·lr·吞吐·GPU）、演示曲线 |
 | 检测 | 5 相机拍摄 → 3D 形状与表面异常（橙色）、判定依据与可信度、CAD 基准模型 |
@@ -84,7 +84,7 @@ OMX_SIMULATE=0 python run.py
   ```
 
   - 会拒绝 5000/5001 端口。
-  - 不会改动真实的 `lerobot_data`、`calibration.json` 和抓取轨迹文件。
+  - 不会改动真实的 `lerobot_data` 和抓取轨迹文件。
 
 ---
 
@@ -105,7 +105,7 @@ OMX_SIMULATE=0 python run.py
 
 ### 相机同步 —— 为什么不用"最新帧"
 
-用 5 个线程分别采集 5 台相机时，各自相位互不相关。若只是收集每台相机的*最新*帧，
+用 4 个线程分别采集 4 台相机时，各自相位互不相关。若只是收集每台相机的*最新*帧，
 当采样周期与采集周期相同时（都是 30Hz），在边界处有的相机持有新帧、有的持有上一帧，
 从而**相差一个周期（33ms）**（混叠）。
 
@@ -135,6 +135,28 @@ OMX_SIMULATE=0 python run.py
 一次性写入会使电机以最大速度猛冲。服务器关闭时，`atexit` 按 回原点 -> 释放扭矩 ->
 关闭端口 的顺序清理；即使回原点失败，也由 `finally` 保证扭矩释放。
 
+### 传送带驱动 —— DC 电机 + HW-095（L298N 双 H 桥模块）
+
+一块 STM32F411 BlackPill 控制两条皮带（M1 供料 = A 通道，M2 作业 = B 通道）和分拣闸门伺服（PB3）。
+没有编码器，所以不知道转速和位置；速度只能用 PWM 占空比（%）设定。LM 导轨（M3）已取消。
+
+| L298N | M1（供料，A） | M2（作业，B） |
+|---|---|---|
+| ENA/ENB（PWM） | **PB0**（固件常量 `PB0_ALT1`，TIM3_CH3） | PA3（TIM5_CH4） |
+| IN1/IN3 | PA1 | PA6 |
+| IN2/IN4 | PA2 | PA7 |
+
+- **不要使用 PA0。** 它是板载 KEY 按键，不能作为输出（所以 M1 的 ENA 用 PB0）。
+- 电机电源 12V 接 L298N 的 12V 端子，GND 与 BlackPill 共地。
+- **拔掉 ENA/ENB 跳线。** 插着时始终全速，PWM 不起作用。
+- 建议在 EN、IN 引脚加 10kΩ 下拉电阻 —— 复位和 DFU 期间引脚悬空，电机可能抖动。
+- 固件常量（都需要现场实测）：`MIN_RUN_DUTY` 20（电机真正能转的最低占空比，临时值）、PWM 2kHz/10bit、`RAMP_MS` 300。
+- **主机看门狗。** 电机运行中固件 2 秒（`HOST_TIMEOUT_MS`）收不到任何一行就停掉所有电机；端口被关闭（DTR 拉低）时立即停止。
+  只要有一条皮带在转，服务器就用每个端口一个线程每 0.5 秒发一次 `PING`（与命令共用同一把锁）。服务器崩溃或 `release` 后皮带会停。
+- `STOP` 为刹车，`DISABLE` 为自由滑行停止。`DISABLE`（包括紧急停止）之后固件会拒绝 `START`，直到 `ENABLE`（"驱动器上电"）。
+  `DUTY 0` 等同于 `STOP`，设定速度保留。默认速度为 `config.yaml` 的 `conveyors.*.default_duty`（默认 40），连接后在第一次 `START` 之前发送一次。
+- `config.yaml` 里残留的旧键 `conveyors.lm`、`stroke_mm`、`mm_per_rev`、`cycle.belt_rpm` 只记录警告并被忽略。
+
 ### 存储 —— 两个消费者，两个 Writer
 
 ACT（序列）与 CNN（单张快照）的需求完全不同。混在一个类里会导致条件分支爆炸，
@@ -154,14 +176,14 @@ CNN 侧只保留**一组代表性数据**，而非整个 episode。若把所有�
 lerobot_data/
 ├── episodes/
 │   └── episode_000042/
-│       ├── camera_cam1/frame_000000.jpg …
+│       ├── camera_cam2/frame_000000.jpg …
 │       ├── camera_cam2/ … camera_cam5/
 │       ├── joint_states.parquet
 │       └── metadata.json
 └── classification/
-    ├── good/<object_id>/{cam1..cam5}.jpg + labels.json
-    └── defect/<object_id>/{cam1..cam5}.jpg + labels.json
-├── background/{cam1..cam5}.jpg   <- "背景采集" 保存的空扫描台参考图
+    ├── good/<object_id>/{cam2..cam5}.jpg + labels.json
+    └── defect/<object_id>/{cam2..cam5}.jpg + labels.json
+├── background/{cam2..cam5}.jpg   <- "背景采集" 保存的空扫描台参考图
 └── models/<object_id>.stl        <- "注册基准模型" 保存的 CAD
 ```
 
@@ -174,7 +196,7 @@ lerobot_data/
 | `sync_skew_ms` | 该帧集内相机间的时间偏差 |
 | `leader_joint_{0..4}` | 主臂关节角度（deg） |
 | `follower_joint_{0..4}` | 从臂关节角度（deg） |
-| `ts_{cam1..cam5}` | 各相机采集时刻（monotonic） |
+| `ts_{cam2..cam5}` | 各相机采集时刻（monotonic） |
 
 加上 `metadata.json` 中的 `monotonic_offset` 即可将 monotonic 还原为 epoch。
 （使用 monotonic 的原因：墙上时钟可能因 NTP 校正而回退，不适合帧排序。）
@@ -209,7 +231,7 @@ lerobot_data/
 | GET | `/api/readiness` | 数据准备度（ACT episode 数、良品/缺陷物体数、目标值） |
 | POST | `/api/emergency_stop` | 紧急停止 —— 自动循环·遥操作·全部皮带·录制·演示会话一并停止 |
 | POST | `/api/emergency_reset` | 只重新使能被紧急停止关掉的皮带驱动器（"驱动器上电"，什么都不会动）。只针对已连接的皮带 —— 已断开或已 release 的皮带不会被重新打开端口，而是报告为 `not_connected` |
-| GET/POST | `/api/conveyor/status`, `/api/conveyor/<name>/{start,stop,speed,dir,release}` | 传送带（多皮带）控制（自动循环期间除 `stop` 外的驱动命令返回 409） |
+| GET/POST | `/api/conveyor/status`, `/api/conveyor/<name>/{start,stop,speed,dir,enable,servo,release}` | 传送带（2 条 DC 电机皮带）控制（自动循环期间除 `stop`、`enable(false)` 外的驱动命令返回 409）。`speed` 的 body 为 `{"duty": 0~100}`（PWM 占空比 %，超出范围返回 400）。运行中的 `dir`、驱动器关闭时的 `start` 会被固件拒绝（400）。状态键：`running`、`duty`（设定速度）、`direction`、`enabled`、`servo_deg`（仅 M1） |
 | GET | `/api/cycle/status` | 自动循环状态 —— 步骤·进度消息·判定结果·篮子计数·能否开始（`ready`：阻止启动的原因 `reasons`，不阻止的提示 `notes`）。与 `/api/status` 的 `cycle` 键相同 |
 | POST | `/api/cycle/start` | 开始一次循环（抓取 → 皮带输送 → 检测 → 分拣）。未就绪或已在运行则返回 400 + 原因。检查通过后会在机械臂动作之前先打开皮带端口，打不开则返回 400 |
 | POST | `/api/cycle/stop` | 立即中止 —— 只停皮带和自主运行（闸门·机械臂停在原地）。state 变为 `aborted` |
@@ -293,7 +315,7 @@ Success@τ 只在**所有关节同时**处于阈值以内时才计为成功。�
 上升），可立即查看仪表盘。此时数值同样通过真正的 `compute_metrics()`，因此图表逻辑
 与实际完全一致地得到验证。**LEROBOT 模式** 不启动训练：它跟读 `scripts/train_act.py`（见上文"真实 ACT
 训练"一节）留下的最近一次 `logs/train/*` 运行，在同一张图表上画出真实的 loss 曲线（`LeRobotTrainer`，
-0.5 秒轮询）。没有理由在握着 5 台相机和串口的服务器进程内跑 GPU 训练，所以训练始终在服务器之外，
+0.5 秒轮询）。没有理由在握着 4 台相机和串口的服务器进程内跑 GPU 训练，所以训练始终在服务器之外，
 服务器重启后它依然存活。没有运行记录时会说明包装器的用法并以 FAILED 结束。
 
 LEROBOT 模式下的不同之处：
@@ -314,7 +336,7 @@ epoch 结束的瞬间图表就会增长。
 ## Rollout —— 用训练好的 ACT 策略自主运行（新增）
 
 按上述流程（`to_lerobot.py` -> `lerobot-train`）训练结束后，可用该检查点自主控制从臂。
-训练（`lerobot-train`）刻意运行在本服务器进程之外 —— 无法一边握着 5 台相机和串口，
+训练（`lerobot-train`）刻意运行在本服务器进程之外 —— 无法一边握着 4 台相机和串口，
 一边占用 GPU 数小时（见 `backend/core/act_trainer.py` 的 `LeRobotTrainer`）。相反，
 **rollout（推理）运行在本进程内** —— 因为 `HardwareHub` 已经握着从臂/相机。相关代码为
 `backend/core/lerobot_bridge.py`（`ActInferenceRunner`，仅推理）与
@@ -352,7 +374,7 @@ python scripts/to_waypoints.py --episode 000001          # --tol 调整稀疏度
 - teleop 与 rollout 都是调用 `follower.write()` 的循环，因此**互斥**。一个在运行时，
   另一个拒绝启动。`SafetyGuard`（软限位 + 相对变化量钳制）对 rollout 的应用与 teleop
   完全相同。
-- 通过 `frames` 传入的相机名必须与 `CAMERA_ORDER`（`cam1`–`cam5`）一致 —— 给出训练
+- 通过 `frames` 传入的相机名必须与 `CAMERA_ORDER`（`cam2`–`cam5`）一致 —— 给出训练
   时未见过的相机名，策略会悄悄忽略或报错。
 
 ### 在 Windows 上实际遇到的 4 个问题（全部复现并解决）
@@ -430,7 +452,7 @@ python scripts/to_waypoints.py --episode 000001          # --tol 调整稀疏度
       是工具调用延迟导致的测量误差，代码本身看起来没问题）—— 以真实墙上时钟为准再测
       一次。
 - [ ] **合并后的真机集成测试** —— `pytest`（仿真）全部通过，但在同一服务器进程中同时
-      启动传送带 3 轴（含 `lm`）+ 模仿学习 rollout 尚未在真机上验证。`hardware.py`
+      启动传送带 2 条皮带（已换成 DC 电机）+ 模仿学习 rollout 尚未在真机上验证。`hardware.py`
       是两者的公共接触点，若有异常先从那里看。
 - [ ] **含基于 CAD 的缺陷检查（`cad.py`）的三路完全集成** —— 传送带与模仿学习本次已
       合并；CAD 检查（分支 `feature/cad-inspection-and-fixes`，最后一次推送为
@@ -442,7 +464,7 @@ python scripts/to_waypoints.py --episode 000001          # --tol 调整稀疏度
 
 从 5 视角扫描图像生成 3D 形状，用鼠标旋转查看进行检查。
 
-**为什么用 Visual Hull 而非摄影测量。** cam1~cam5 这 5 个视角彼此张开很大，因此像
+**为什么用 Visual Hull 而非摄影测量。** cam2~cam5 这 4 个视角彼此张开很大，因此像
 COLMAP 这类 SfM 的特征点匹配几乎必然失败（通常需要数十至数百张有大量重叠的图像）。
 改用**基于轮廓的 space carving**：
 
@@ -501,14 +523,14 @@ OrbitControls 而是直接实现了一个最小轨道控制。
   - 实机上服务器刚启动时皮带端口是关着的（第一条命令时才打开）。`ready` 既不打开端口也不阻止 —— 只在 `notes`
     里提示"开始时会打开皮带端口"。检查通过后，`POST /api/cycle/start` 会在**机械臂动作之前**打开端口；打不开则
     返回 400 并给出原因，机械臂不会动。
-  - 紧急停止会关闭皮带驱动器（DISABLE）。固件的 START 会把它重新打开，所以紧急停止之后必须由人在设备控制里用
+  - 紧急停止会关闭皮带驱动器（DISABLE）。固件会拒绝 DISABLE 状态下的 START，所以紧急停止之后必须由人在设备控制里用
     "驱动器上电"（`POST /api/emergency_reset`）明确解除，才能开始循环。端口关闭期间被关掉的驱动器，会在开始时
     打开端口之后确认，并以同样的理由拒绝。
 - 循环运行期间，服务器会以 409（`cycle_busy`）拒绝：开始遥操作/rollout/录制/演示、手动拍摄（`/api/scan/capture`、
-  `background`、`calibrate/shot`）、皮带驱动命令（start·speed·dir·move·servo·zero·end·release）和回原点。
+  `background`、`calibrate/shot`）、皮带驱动命令（start·speed·dir·servo·release）和回原点。
   循环中途拍背景会把皮带上的物体烙进背景，导致之后的判定全部出错。只做计算的 `reconstruct`、`calibrate/solve`
   不受阻止。皮带 `stop`·紧急停止·`/api/cycle/stop` 始终可用。**人只要停住任何一条皮带或解除其驱动器，循环也会
-  一起中止**（避免循环在下一步又把人刚停下的皮带转起来）。三个轴共用伺服闸门和 COM 端口，所以循环期间的手动
+  一起中止**（避免循环在下一步又把人刚停下的皮带转起来）。两个轴共用伺服闸门和 COM 端口，所以循环期间的手动
   操作一律保守地阻止，连停另一条皮带也会让循环停下。
 - 中止或出错时只停皮带和 autorun（皮带优先 —— 停 autorun 可能要等 hub 锁）。闸门和机械臂停在原地（闸门在下一次
   循环开始时回到关闭角度）。紧急停止最先切断循环，并稍等（最多 1 秒）已经发出的皮带命令结束，然后才停止并关闭

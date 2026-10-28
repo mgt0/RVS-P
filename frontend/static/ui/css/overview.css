@@ -37,14 +37,13 @@
 /* 상한 960: 넓은 화면에서 viewBox 비례로 SVG 글자가 다른 카드보다 커지지 않게(최대 약 1.26배) */
 .ov-map__svg { width: 100%; max-width: 960px; height: auto; margin-inline: auto; }
 .ov-map__svg text { font-family: var(--font); }
-.ov-m-belt, .ov-m-rail { fill: var(--bg); stroke: var(--line-2); }
+.ov-m-belt { fill: var(--bg); stroke: var(--line-2); }
 .ov-m-zone { fill: none; stroke: var(--ink-2); stroke-dasharray: 5 5; }
 .ov-m-cube { fill: var(--surface); stroke: var(--ink); stroke-width: 1.6; }
 .ov-m-ray { stroke: var(--line-2); }
 .ov-m-ring { fill: none; stroke: var(--disabled); stroke-dasharray: 3 4; }
 .ov-m-arm { fill: var(--surface); stroke: var(--ink); stroke-width: 1.6; }
 .ov-m-link { stroke: var(--disabled); stroke-dasharray: 2 4; }
-.ov-m-carriage { fill: var(--ink); }
 .ov-t { fill: var(--ink); font-size: 15px; }
 .ov-t2 { fill: var(--ink-2); font-size: 13px; }
 .ov-t--warn { fill: var(--warn); font-weight: 600; }

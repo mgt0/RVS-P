@@ -1,4 +1,4 @@
-"""컨베이어(STM32F411 BlackPill + TB6600 + NEMA17) 제어 API.
+"""컨베이어(STM32F411 BlackPill + HW-095(L298N) + DC 모터) 제어 API.
 
 벨트가 여러 대다(공급 벨트 + 로봇 작업 영역 벨트). 경로의 <name> 이
 config.yaml 의 conveyors 키와 일치한다. 이름을 생략한 예전 경로는
@@ -87,14 +87,15 @@ def stop(name):
 @bp.post("/speed", defaults={"name": None})
 @bp.post("/<name>/speed")
 def speed(name):
-    """목표 속도를 모터축 RPM 으로 지정한다. 예: {"rpm": 45}
+    """속도를 PWM 듀티(%)로 지정한다. 예: {"duty": 40}  (0~100, 0 은 정지와 같다)
 
-    steps/sec 대신 RPM 을 받는다. 1.8도 모터의 마이크로스텝 환산은 펌웨어가
-    하므로(DIP 스위치와 같은 값이 거기 박혀 있다) 호스트는 몰라도 된다.
+    엔코더가 없는 DC 모터라 RPM 은 알 수 없다. 달리는 중이면 펌웨어가 램프로 반영한다.
+    범위를 벗어나거나 duty 가 없으면(예전 {"rpm": ..} 포함) 400 이다.
     """
     _manual()
-    body = request.get_json(silent=True) or {}
-    return _ok(name, _belt(name).set_speed_rpm(body.get("rpm")))
+    body = request.get_json(silent=True)
+    duty = body.get("duty") if isinstance(body, dict) else None
+    return _ok(name, _belt(name).set_duty(duty))
 
 
 @bp.post("/dir", defaults={"name": None})
@@ -102,8 +103,7 @@ def speed(name):
 def direction(name):
     """회전 방향. 예: {"direction": "ccw"}
 
-    구동 중에 바꾸면 펌웨어가 잠깐 멈추고 저속에서 다시 가속한다
-    (부하가 걸린 상태에서 즉시 반전시키면 탈조한다).
+    달리는 중에는 펌웨어가 거부한다(ERR: RUNNING). 먼저 정지한 뒤 바꾼다.
     """
     _manual()
     body = request.get_json(silent=True) or {}
@@ -115,8 +115,9 @@ def direction(name):
 def enable(name):
     """드라이버 활성/해제. 예: {"enabled": false}
 
-    해제하면 홀딩 토크가 풀려 벨트를 손으로 움직일 수 있다. 사이클 중에도 허용하지만 해제는 정지와 같아
-    사이클을 중단한다(다음 START 가 드라이버를 다시 켜므로, 사이클이 이어지면 손이 닿은 벨트가 다시 돈다).
+    해제하면 모터가 프리런으로 풀려 벨트를 손으로 움직일 수 있고, 다시 켜기 전에는 START 를 펌웨어가 거부한다.
+    사이클 중에도 허용하지만 해제는 정지와 같아 사이클을 중단한다(이어지면 다음 START 가 ERR: DISABLED 로 거부당해
+    엉뚱한 오류로 끝난다).
     """
     body = request.get_json(silent=True) or {}
     enabled = bool(body.get("enabled", True))
@@ -135,40 +136,6 @@ def servo(name):
     return _ok(name, _belt(name).set_servo_deg(body.get("deg")))
 
 
-@bp.post("/zero", defaults={"name": None})
-@bp.post("/<name>/zero")
-def zero(name):
-    """현재 위치를 원점(0)으로 잡는다. 리밋 스위치가 없는 LM 가이드용.
-
-    축을 한쪽 끝으로 옮겨둔 뒤 부른다. 이후 config 의 limit_rev 범위를 벗어나면
-    펌웨어가 스스로 멈춘다. 보드 전원을 껐다 켜면 다시 잡아야 한다.
-    """
-    _manual()
-    return _ok(name, _belt(name).set_zero())
-
-
-@bp.post("/end", defaults={"name": None})
-@bp.post("/<name>/end")
-def set_end(name):
-    """지금 자리를 가동 범위의 끝으로 삼는다(끝점 티칭).
-
-    원점을 잡고 반대쪽 끝까지 몰고 온 뒤 부른다. 자로 재서 config 에 옮겨 적는
-    대신 축을 직접 움직여 정하므로 값이 실물과 어긋나지 않는다. 끝점은 파일에
-    저장돼 전원을 껐다 켜도 남는다.
-    """
-    _manual()
-    return _ok(name, _belt(name).set_end())
-
-
-@bp.post("/move", defaults={"name": None})
-@bp.post("/<name>/move")
-def move(name):
-    """그 위치(mm)로 이동하고 스스로 멈춘다. 예: {"mm": 320}"""
-    _manual()
-    body = request.get_json(silent=True) or {}
-    return _ok(name, _belt(name).move_to_mm(body.get("mm")))
-
-
 @bp.post("/release", defaults={"name": None})
 @bp.post("/<name>/release")
 def release(name):
@@ -177,6 +144,8 @@ def release(name):
     포트는 한 번 열면 계속 잡고 있다(여닫이가 잦으면 명령이 유실될 틈이 생긴다).
     그래서 업로드하려면 포트를 비워야 하는데, 그것 때문에 서버를 통째로 내리면
     카메라까지 끊긴다. 이 엔드포인트는 포트만 놓아준다. 다음 START 에서 자동 재연결.
+    달리던 벨트는 포트를 닫는 순간(DTR 하강) 펌웨어가 세우고, 못 받아도 PING 이 끊겨 호스트 워치독(HOST_TIMEOUT_MS,
+    기본 2초)이 세운다.
     """
     _manual()
     belt = _belt(name)

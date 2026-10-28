@@ -40,7 +40,7 @@ REAL_CAPTURE = analysis_api.run_scan_capture
 CYCLE_KEYS = {"state", "step", "steps", "started_at", "ended_at", "message", "error", "result",
               "baskets", "ready", "completed"}
 STEP_IDS = ["pick", "to_scan", "inspect", "sort"]
-NOISE = ("STATUS", "LIMIT")     # 상태 조회·리밋 설정은 구동 순서와 무관하다
+NOISE = ("STATUS",)     # 상태 조회는 구동 순서와 무관하다
 
 
 def stats(flagged: float = 0.002, level: str = "ok", reasons: list[str] | None = None) -> dict:
@@ -60,7 +60,7 @@ class FakeCapture:
                            "moving": [n for n, c in hub.conveyors.items() if c.state.get("running")]})
         if self.error:
             raise self.error
-        return {"ok": True, "capture_id": "20261028_153000", "cameras": ["cam1", "cam2"],
+        return {"ok": True, "capture_id": "20261028_153000", "cameras": ["cam2", "cam3"],
                 "mesh": {"stats": self.stats}}
 
 
@@ -233,9 +233,9 @@ class TestFlow:
         assert c["baskets"]["good"]["count"] == 1 and c["baskets"]["defect"]["count"] == 0
         assert c["completed"] == 1 and c["message"] == "완료: 양품"
         assert isinstance(c["started_at"], float) and c["ended_at"] >= c["started_at"]
-        # 방향·속도·게이트는 사이클이 명시적으로 정하고, 벨트는 이송 → 양품 이송 순으로 두 번 돈다
+        # 방향·속도(PWM 듀티 %)·게이트는 사이클이 명시적으로 정하고, 벨트는 이송 → 양품 이송 순으로 두 번 돈다
         assert commands(log) == [
-            f"DIR {fast.belt_dir.upper()}", f"RPM {fast.belt_rpm:.3f}", f"SERVO {fast.gate_close_deg}",
+            f"DIR {fast.belt_dir.upper()}", f"DUTY {fast.belt_duty:.3f}", f"SERVO {fast.gate_close_deg}",
             "START", "STOP",          # 이송
             "START", "STOP",          # 양품 쪽으로
         ]
@@ -253,7 +253,7 @@ class TestFlow:
         assert c["baskets"]["defect"]["count"] == 1 and c["baskets"]["good"]["count"] == 0
         assert c["message"] == "완료: 불량"
         assert commands(log) == [
-            f"DIR {fast.belt_dir.upper()}", f"RPM {fast.belt_rpm:.3f}", f"SERVO {fast.gate_close_deg}",
+            f"DIR {fast.belt_dir.upper()}", f"DUTY {fast.belt_duty:.3f}", f"SERVO {fast.gate_close_deg}",
             "START", "STOP",                                    # 이송
             "START", "STOP",                                    # 분기점까지 — 세운 다음에야
             f"SERVO {fast.gate_open_deg}", f"SERVO {fast.gate_close_deg}",     # 게이트 열림 → 닫힘
@@ -279,7 +279,7 @@ class TestFlow:
         assert not belt(env).state["running"] and not env.hub.autorun_status["running"]
         fast = env.fast
         assert commands(log) == [
-            f"DIR {fast.belt_dir.upper()}", f"RPM {fast.belt_rpm:.3f}", f"SERVO {fast.gate_close_deg}",
+            f"DIR {fast.belt_dir.upper()}", f"DUTY {fast.belt_duty:.3f}", f"SERVO {fast.gate_close_deg}",
             "START", "STOP",          # 이송
             "STOP",                   # 실패 정리의 정지 — 게이트·팔 명령은 없다
         ]
@@ -430,7 +430,7 @@ class TestAbort:
         assert "START" not in log and env.capture.calls == []
 
     def test_드라이버를_끄면_사이클도_중단되고_켜는_것은_영향이_없다(self, env):
-        # 다음 START 가 드라이버를 다시 켜므로, 사이클이 이어지면 사람이 손댄 벨트가 다시 돈다
+        # 해제는 정지와 같다. 사이클이 이어지면 다음 START 가 ERR: DISABLED 로 거부당해 엉뚱한 오류로 끝나므로 처음부터 중단으로 끝낸다
         run_in_to_scan(env)
         name = env.hub.cfg.cycle.belt
         assert env.c.post(f"/api/conveyor/{name}/enable", json={"enabled": True}).status_code == 200
@@ -580,8 +580,22 @@ class TestRace:
         wait_cycle(env)
         starts = [i for i, c in enumerate(order) if c == "START"]
         disables = [i for i, c in enumerate(order) if c == "DISABLE"]
-        assert starts and disables and max(starts) < min(disables)      # DISABLE 뒤에 START 가 없다 — 드라이버가 다시 켜지지 않는다
+        assert starts and disables and max(starts) < min(disables)      # DISABLE 뒤에 START 가 없다 — 펌웨어가 거부할 명령을 내지 않는다
         assert belt(env).state["enabled"] is False and not belt(env).state["running"]
+
+    def test_드라이버가_꺼진_뒤_나간_START_는_펌웨어가_거부해_벨트를_돌리지_않고_사이클이_실패한다(self, env, monkeypatch):
+        real = belt(env)._command
+
+        def command(c):
+            if c == "START":
+                belt(env)._state["enabled"] = False     # 점검을 통과한 뒤 드라이버가 꺼졌다(시뮬레이션에서는 이 값이 곧 펌웨어 상태다)
+            return real(c)
+
+        monkeypatch.setattr(belt(env), "_command", command)
+        assert start(env).status_code == 200
+        c = wait_cycle(env)
+        assert c["state"] == "failed" and "ERR: DISABLED" in c["error"]
+        assert not belt(env).state["running"] and env.capture.calls == []
 
     def test_이미_나간_명령이_끝나지_않아도_abort_는_상한_안에_돌아온다(self, env, monkeypatch):
         monkeypatch.setattr(cycle_mod, "ABORT_WAIT_SEC", 0.3)
@@ -639,9 +653,8 @@ class TestPickSettle:
 class TestManualLock:
     MANUAL_BELT = [
         ("/api/conveyor/start", None), ("/api/conveyor/work/start", None),
-        ("/api/conveyor/speed", {"rpm": 5}), ("/api/conveyor/dir", {"direction": "ccw"}),
-        ("/api/conveyor/servo", {"deg": 90}), ("/api/conveyor/zero", None), ("/api/conveyor/end", None),
-        ("/api/conveyor/move", {"mm": 10}), ("/api/conveyor/release", None),
+        ("/api/conveyor/speed", {"duty": 5}), ("/api/conveyor/dir", {"direction": "ccw"}),
+        ("/api/conveyor/servo", {"deg": 90}), ("/api/conveyor/release", None),
     ]
 
     def test_사이클_중에는_수동_조작이_409_이고_정지만_된다(self, env):
@@ -722,13 +735,13 @@ class TestReady:
 
     def test_설정에_포트가_없는_벨트는_막는다(self, env, monkeypatch):
         # 열 포트가 없으면 시작할 때 연다는 약속을 지킬 수 없다
-        no_port = ConveyorController(ConveyorConfig(label="포트 없는 벨트"), simulate=False, name=env.fast.belt)
+        no_port = ConveyorController(ConveyorConfig(label="포트 없는 벨트"), simulate=False)
         with monkeypatch.context() as m:        # 시험이 끝나기 전에 되돌린다(정리 단계가 이 벨트에 명령을 내지 않게)
             m.setitem(env.hub.conveyors, env.fast.belt, no_port)
             self.refuses(env, f"사이클 벨트 '{env.fast.belt}'(포트 없는 벨트)의 포트가 config.yaml 에 없습니다", m)
 
     def test_벨트_드라이버가_꺼져_있으면_막고_드라이버_켜기로_풀린다(self, env, monkeypatch):
-        # 비상 정지는 드라이버를 DISABLE 한다. 펌웨어 START 가 다시 켜 버리므로, 사람이 명시적으로 리셋해야 재개한다
+        # 비상 정지는 드라이버를 DISABLE 한다. 펌웨어는 DISABLE 상태의 START 를 거부하므로, 사람이 명시적으로 리셋해야 재개한다
         assert env.c.post("/api/emergency_stop").status_code == 200
         self.refuses(env, "비상 정지 뒤 벨트 드라이버가 꺼져 있습니다. 장비 제어에서 '드라이버 켜기'를 누르세요.", monkeypatch)
         assert env.c.post("/api/emergency_reset").status_code == 200
@@ -829,8 +842,7 @@ class TestBeltPort:
 
     def test_장치가_없는_실제_포트는_이유를_말하고_거부한다(self, env, monkeypatch):
         # 시뮬레이션이 아닌 컨트롤러가 존재하지 않는 포트를 열어 본다(pyserial 이 거부한다 — 장치는 건드리지 않는다)
-        absent = ConveyorController(ConveyorConfig(port="NO_SUCH_PORT_FOR_TEST", label="시험 벨트"),
-                                    simulate=False, name=env.fast.belt)
+        absent = ConveyorController(ConveyorConfig(port="NO_SUCH_PORT_FOR_TEST", label="시험 벨트"), simulate=False)
         with monkeypatch.context() as m:        # 시험이 끝나기 전에 되돌린다(정리 단계가 이 벨트에 명령을 내지 않게)
             m.setitem(env.hub.conveyors, env.fast.belt, absent)
             ready = cycle_of(env)["ready"]
@@ -945,6 +957,7 @@ class TestConfig:
         c = CycleConfig()
         assert c.pick_waypoints.is_absolute() and c.pick_waypoints.name == "pick_place.json" and c.pick_checkpoint is None
         assert (c.pick_speed, c.pick_timeout_sec, c.belt, c.to_scan_sec, c.settle_sec, c.resolution) == (1.0, 90.0, "work", 3.0, 0.5, 96)
+        assert c.belt_duty == 40.0              # 벨트 속도(PWM 듀티 %). 엔코더가 없어 RPM 은 없다
         assert c.pick_settle_sec == 1.0         # 집기가 끝난 뒤 그리퍼가 놓는 동작을 기다리는 시간
         assert (c.defect_ratio, c.good_run_sec, c.defect_to_branch_sec) == (0.01, 4.0, 1.5)
         assert (c.gate_open_deg, c.gate_close_deg, c.gate_hold_sec, c.basket_capacity) == (15, 130, 2.0, 2)
@@ -961,12 +974,15 @@ class TestConfig:
         assert _cycle({"belt_dir": "CCW"}).belt_dir == "ccw"
         assert _cycle({"pick_checkpoint": "outputs/x"}).pick_checkpoint.is_absolute()      # 상대 경로는 레포 루트 기준
         assert _cycle({"pick_settle_sec": 0}).pick_settle_sec == 0 and _cycle({"pick_settle_sec": 2.5}).pick_settle_sec == 2.5
+        assert _cycle({"belt_duty": 55}).belt_duty == 55.0 and _cycle({"belt_duty": 100}).belt_duty == 100.0
+        assert _cycle({"belt_rpm": 10}) == CycleConfig()    # 옛 키는 서버를 죽이지 않고 무시한다(경고만 남긴다)
 
     @pytest.mark.parametrize("node", [
         {"settle_sec": 5}, {"settle_sec": -1}, {"resolution": 200}, {"resolution": 8}, {"resolution": 50.5},
         {"belt_dir": "up"}, {"belt": " "}, {"defect_ratio": 0}, {"defect_ratio": 1.5}, {"basket_capacity": 0},
         {"to_scan_sec": "abc"}, {"to_scan_sec": 0}, {"gate_open_deg": 181}, {"gate_close_deg": -1},
-        {"belt_rpm": float("inf")}, {"pick_speed": float("nan")}, {"pick_timeout_sec": 0},
+        {"belt_duty": float("inf")}, {"belt_duty": 0}, {"belt_duty": -5}, {"belt_duty": 100.1}, {"belt_duty": "abc"},   # 0 은 DUTY 0 = STOP
+        {"pick_speed": float("nan")}, {"pick_timeout_sec": 0},
         {"to_scan_sec": 3000}, {"good_run_sec": 3000}, {"defect_to_branch_sec": 3000},     # 단위를 잘못 적은 값(ms)
         {"gate_hold_sec": 100}, {"pick_speed": 50}, {"pick_timeout_sec": 6000},
         {"pick_settle_sec": -1}, {"pick_settle_sec": 100}, {"pick_settle_sec": "abc"}, {"pick_settle_sec": float("nan")},

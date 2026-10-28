@@ -10,8 +10,8 @@
     세 축이 공유하므로 사이클 중 수동 조작은 보수적으로 전부 막는다).
   * 비상 정지·서버 종료는 abort() 로 이 객체를 가장 먼저 끊는다. 플래그를 세운 뒤, 이미 점검을 통과해 나가는
     중인 벨트 명령이 끝나길 잠깐 기다리고 돌아온다(ABORT_WAIT_SEC). 비상 정지는 그 뒤에 벨트를 STOP·DISABLE 하므로
-    DISABLE 뒤에 START 가 끼어 드라이버를 다시 켤 수 없다. 모터는 사이클 스레드가 깨어나 세운다(허브의 정지
-    절차도 따로 같은 일을 한다).
+    DISABLE 뒤에 START 가 끼어들지 못한다(끼어들어도 펌웨어가 ERR: DISABLED 로 거부한다). 모터는 사이클 스레드가
+    깨어나 세운다(허브의 정지 절차도 따로 같은 일을 한다).
   * 팔을 움직이는 autorun 시작은 허브가 자기 락 안에서 중단 여부를 다시 확인해 정지 뒤의 시작을 거부한다.
 
 스레드: 사이클 한 번 = 스레드 하나. 상태 필드는 _lock 이 지킨다. 이 락을 쥔 채 허브를 부르지 않는다 —
@@ -39,8 +39,8 @@ BASKET_KO = {"good": "양품", "defect": "불량"}
 POLL_SEC = 0.1          # 집기 중 autorun 상태를 보는 간격(중단은 Event 가 즉시 깨우므로 반응 속도와 무관하다)
 STOP_JOIN_SEC = 5.0     # stop() 이 스레드 종료를 기다리는 상한. 끊을 수 없는 호출(촬영·시리얼 명령)이 끝나길 기다린다
 ABORT_WAIT_SEC = 1.0    # abort() 가 이미 나간 벨트 명령이 끝나길 기다리는 상한(명령 하나는 ms 단위). 넘기면 기다리지 않고 계속한다
-# 비상 정지가 벨트 드라이버를 DISABLE 한 채다. 펌웨어 beginRun() 의 START 가 드라이버를 다시 켜므로, 사람이 명시적으로
-# 리셋('드라이버 켜기' = /api/emergency_reset)해야 자동 운전을 재개하게 한다.
+# 비상 정지가 벨트 드라이버를 DISABLE 한 채다. 펌웨어는 DISABLE 상태의 START 를 거부하므로(ERR: DISABLED), 사람이 명시적으로
+# 리셋('드라이버 켜기' = /api/emergency_reset)해야 자동 운전을 재개한다. 시작하기 전에 미리 알리려는 문구다.
 DRIVER_OFF = "비상 정지 뒤 벨트 드라이버가 꺼져 있습니다. 장비 제어에서 '드라이버 켜기'를 누르세요."
 
 
@@ -392,8 +392,9 @@ class CycleRunner:
         """벨트 명령은 전부 이걸 거친다 — 중단된 뒤에는 새 명령을 내지 않는다.
 
         점검과 명령을 _act 한 덩어리로 묶는다. 락 없이 점검만 하면, 점검을 통과한 뒤 비상 정지가 벨트를 DISABLE 하고 난
-        다음에 이미 나가던 START 가 끼어든다 — 펌웨어 beginRun() 은 START 를 받으면 드라이버를 다시 켜서 비상 정지가
-        무효가 된다. abort() 가 이 락을 기다려 주므로(이미 나간 명령이 끝난 뒤에 돌아온다) 순서가 보장된다.
+        다음에 이미 나가던 START 가 끼어든다 — 지금 펌웨어는 ERR: DISABLED 로 거부해 벨트가 돌지는 않지만 사이클이 엉뚱한
+        오류로 끝난다(옛 스텝 펌웨어는 START 가 드라이버를 다시 켜서 비상 정지가 무효가 됐다). abort() 가 이 락을
+        기다려 주므로(이미 나간 명령이 끝난 뒤에 돌아온다) START 는 늘 DISABLE 앞에 서고, DISABLE 이 곧바로 세운다.
         이 락을 쥔 채 허브를 부르지 않는다(모듈 docstring). 팔을 움직이는 autorun 시작과 촬영은 이걸 거치지 않는다.
         """
         with self._act:
@@ -411,7 +412,7 @@ class CycleRunner:
         hub, belt = self._hub, self._belt(cfg)
         # 방향·속도는 사이클이 명시적으로 정한다(직전에 사람이 어떻게 만졌든 상관없이). 벨트가 서 있을 때만 바꾼다.
         self._do(belt.set_direction, cfg.belt_dir)
-        self._do(belt.set_speed_rpm, cfg.belt_rpm)
+        self._do(belt.set_duty, cfg.belt_duty)
         self._do(belt.set_servo_deg, cfg.gate_close_deg)     # 게이트는 닫힌 채로 물체를 받는다
         # 팔을 움직이는 start_autorun 은 _do(_act)를 거치지 않는다 — 허브 락을 기다리므로 abort() 와 락 순서가 꼬인다.
         # 대신 허브가 자기 락 안에서 중단 여부를 다시 확인해, 이 점검을 통과한 뒤에 비상 정지가 끝났다면 거부한다.

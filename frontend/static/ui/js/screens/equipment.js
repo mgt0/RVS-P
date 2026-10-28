@@ -1,17 +1,22 @@
 /* =============================================================
    장비 제어 화면 — 라우트 equipment, 클래스 접두어 eq-.
-   실물 모터(컨베이어 3축·로봇 팔)를 움직이는 화면이다. 로봇 옆에 사람이 있을 때만 쓴다.
+   실물 모터(컨베이어 벨트·로봇 팔)를 움직이는 화면이다. 로봇 옆에 사람이 있을 때만 쓴다.
 
    레거시 frontend/index.html scan 섹션(:143-315)과 static/js/app.js 의 벨트 로직(:472-635),
-   텔레옵·홈·포트 식별(:430-470)을 그대로 옮겼다. 호출하는 API 경로·본문·메시지는 같다.
+   텔레옵·홈·포트 식별(:430-470)을 그대로 옮겼다. 호출하는 API 경로·본문·메시지는 같다(아래 달라진 점 제외).
    벨트 상태 병합(제자리 갱신)·beltBusy(이름 키)·beltCall 은 store.js 가 쥐고 있고,
    이 파일은 그 위에서 액션만 건다(s.beltCall). 벨트 객체를 새로 만들지 않는다.
 
    레거시와 달라진 점(의도한 것만)
-   - 토크 해제·포트 해제·원점·끝점은 위험색 더보기 메뉴 안으로(한 단계 추가). 레거시에는 확인창이 없었다.
-   - 위치 이동은 슬라이더가 아니라 숫자 입력 + '이동'. 사용자가 치는 값만 이 화면이 따로 쥔다(moveDraft).
-     치는 중이 아니면 칸은 store 가 실제 위치에 맞춰 둔 belt.moveInput 을 보인다. 원점·끝점·토크·이동 뒤와 화면을 떠날 때 draft 를 비운다.
-   - RPM 에 −/+ 0.5 단위 버튼. 범위(0.5~112) 밖이면 요청을 보내지 않고 입력칸 아래에 이유를 보인다.
+   - 드라이버(토크) 해제·포트 해제는 위험색 더보기 메뉴 안으로(한 단계 추가). 레거시에는 확인창이 없었다.
+   - 구동부가 스텝모터(TB6600)에서 DC 모터 + HW-095(L298N)로 바뀌고 LM 가이드가 없어졌다. 엔코더가 없어 RPM·위치를
+     측정하지 못하므로 속도는 PWM 듀티 %(본문 {duty})로만 지정하고, 위치 이동·원점·끝점·리밋 표시는 지웠다.
+   - 속도(%)에 −/+ 1 단위 버튼. 0~100 정수가 아니면 요청을 보내지 않고 입력칸 아래에 이유를 보인다.
+     서버의 duty 는 '설정 속도'라 정지 중에도 마지막 값이 남는다(도는지는 running). 칸은 치는 중이 아니면 그 값을 따라가고
+     (store.syncDutyInput), 정지 상태는 '0%' 가 아니라 '정지 · 설정 N%' 로 보인다.
+   - 방향은 정지 중에만 바꾼다. 달리는 중이면 펌웨어가 ERR: RUNNING 으로 거부하므로 눌러 보기 전에 잠그고 이유를 보인다.
+   - 드라이버가 꺼져 있으면 서버가 시작을 거부한다(ERR: DISABLED). 서버 문구는 그대로 두고 '드라이버 켜기를 누르세요'
+     안내를 앞에 붙인다. 그 밖의 펌웨어 오류(예: ERR: TIMER CONFLICT)는 서버 문구 그대로 오류 토스트로 보인다.
    - 홈 자세로 = 확인 대화상자 한 단계 추가(레거시는 바로 실행).
    - 팔 메뉴의 '포트 식별'은 리더·팔로워 각각이라 항목이 둘이다. 토크·포트 해제는 팔에 두지 않는다(팔로워 토크를 풀면 낙하).
      식별의 확인도 window.confirm 이 아니라 store.askConfirm 이다(네이티브 확인창은 떠 있는 동안 비상 정지까지 막는다).
@@ -27,10 +32,13 @@
   const GATE_OPEN_DEG = 15;
   const GATE_CLOSE_DEG = 130;
 
-  /* 목표 RPM 입력 범위(레거시 index.html:185 의 min·max·step) */
-  const RPM_MIN = 0.5;
-  const RPM_MAX = 112;
-  const RPM_STEP = 0.5;
+  /* 속도(PWM 듀티 %) 입력 범위. 서버 /speed 의 duty 범위(0~100)와 같고, 화면은 정수만 받는다. */
+  const DUTY_MIN = 0;
+  const DUTY_MAX = 100;
+  const DUTY_STEP = 1;
+
+  /* 서버가 시작을 거부할 때 펌웨어의 'ERR: DISABLED'(드라이버 꺼짐)가 그대로 올라온다. 이 안내를 앞에 붙인다. */
+  const DRIVER_OFF_MSG = '비상 정지 뒤 드라이버가 꺼져 있습니다 — 드라이버 켜기를 누르세요';
 
   /* 홈 복귀 요청의 대기 한도 = 한 방향 최대 이동(360°)을 홈 속도로 가는 시간 + 여유.
      기본 8초에 끊으면 팔이 움직이는 중에 화면 잠금이 풀린다. 30°/s 면 12초 + 8초 = 20초. */
@@ -83,61 +91,38 @@
 
         <p v-if="cycle" class="eq-belt__reason"><rv-status kind="info" label="자동 사이클 진행 중 — 정지만 쓸 수 있습니다." /></p>
         <div class="eq-belt__row">
-          <div class="eq-rpm">
-            <span :id="'eq-rpm-' + b.name" class="eq-rpm__label">목표 속도 (모터축 RPM)</span>
-            <div class="eq-rpm__ctl">
+          <div class="eq-speed">
+            <span :id="'eq-speed-' + b.name" class="eq-speed__label">속도 (%)</span>
+            <div class="eq-speed__ctl">
               <button type="button" class="eq-step" :aria-label="(b.label || b.name) + ' 속도 낮추기'"
-                      :disabled="locked(b) || !(Number(b.rpmInput) > RPM_MIN)" @click="stepRpm(b, -RPM_STEP)">−</button>
-              <input class="eq-rpm__in" type="number" inputmode="decimal" :min="RPM_MIN" :max="RPM_MAX" step="0.5"
-                     v-model.number="b.rpmInput" :aria-labelledby="'eq-rpm-' + b.name"
-                     :aria-invalid="rpmOk(b) ? null : 'true'" :disabled="locked(b)" @change="setBeltSpeed(b)">
+                      :disabled="locked(b) || !(Number(b.dutyInput) > DUTY_MIN)" @click="stepDuty(b, -DUTY_STEP)">−</button>
+              <input class="eq-speed__in" type="number" inputmode="numeric" :min="DUTY_MIN" :max="DUTY_MAX" :step="DUTY_STEP"
+                     v-model.number="b.dutyInput" :data-duty-belt="b.name" :aria-labelledby="'eq-speed-' + b.name"
+                     :aria-invalid="dutyOk(b) ? null : 'true'" :disabled="locked(b)" @change="setBeltSpeed(b)">
               <button type="button" class="eq-step" :aria-label="(b.label || b.name) + ' 속도 높이기'"
-                      :disabled="locked(b) || !(Number(b.rpmInput) < RPM_MAX)" @click="stepRpm(b, RPM_STEP)">+</button>
+                      :disabled="locked(b) || !(Number(b.dutyInput) < DUTY_MAX)" @click="stepDuty(b, DUTY_STEP)">+</button>
             </div>
           </div>
-          <rv-seg size="sm" :label="(b.label || b.name) + ' 방향'" :model-value="b.dir"
-                  :options="dirOptions(b)" @change="toggleBeltDir(b, $event)" />
+          <div class="eq-dir">
+            <span v-if="b.running && !cycle" :id="'eq-dirwhy-' + b.name" class="eq-belt__reason"><rv-status kind="info" label="정지한 뒤에 바꿀 수 있습니다" /></span>
+            <rv-seg size="sm" :label="(b.label || b.name) + ' 방향'" :model-value="dirOf(b)"
+                    :aria-describedby="b.running && !cycle ? 'eq-dirwhy-' + b.name : null"
+                    :options="dirOptions(b)" @change="toggleBeltDir(b, $event)" />
+          </div>
         </div>
-        <p v-if="!rpmOk(b)" class="rv-field__error">
-          <rv-status kind="warn" :label="RPM_MIN + '~' + RPM_MAX + ' RPM 사이로 입력하세요'" />
+        <p v-if="!dutyOk(b)" class="rv-field__error">
+          <rv-status kind="warn" :label="DUTY_MIN + '~' + DUTY_MAX + ' 사이 정수(%)로 입력하세요'" />
         </p>
 
-        <div v-if="b.limit_rev" class="eq-lm">
-          <div class="eq-lm__now">
-            <span>현재 위치 <strong class="rv-num">{{ posMm(b) }} mm</strong></span>
-            <rv-status v-if="atEnd(b)" kind="warn" label="끝점 도달" />
-          </div>
-          <rv-gauge :value="posMm(b)" :min="0" :max="strokeMm(b)" :show-value="false"
-                    :aria-label="(b.label || b.name) + ' 현재 위치 ' + posMm(b) + ' mm, 전체 행정 ' + strokeMm(b) + ' mm'" />
-          <div class="eq-lm__scale rv-num"><span>원점 0</span><span>끝점 {{ strokeMm(b) }} mm</span></div>
-          <form class="eq-move" @submit.prevent="moveBeltTo(b)">
-            <label class="rv-field">
-              목표 위치 (mm)
-              <input type="number" inputmode="numeric" min="0" :max="strokeMm(b)" step="1" :value="moveShown(b)"
-                     :aria-invalid="moveOk(b) ? null : 'true'" :disabled="locked(b)"
-                     @input="moveDraft[b.name] = $event.target.value">
-            </label>
-            <button type="submit" class="rv-btn" :aria-label="(b.label || b.name) + ' 목표 위치로 이동'"
-                    :disabled="locked(b) || !moveOk(b)">이동</button>
-          </form>
-          <p v-if="!moveOk(b)" class="rv-field__error">
-            <rv-status kind="warn" :label="'0~' + strokeMm(b) + ' mm 사이로 입력하세요'" />
-          </p>
-        </div>
-
-        <div v-if="b.motor === 1" class="eq-gate">
+        <div v-if="hasGate(b)" class="eq-gate">
           <span class="eq-gate__name">분류 게이트</span>
           <rv-seg size="sm" label="분류 게이트" :model-value="b.servo_deg" :options="gateOptions(b)" @change="setGate(b, $event)" />
-          <span v-if="b.servo_deg !== undefined" class="rv-num rv-small rv-muted">{{ b.servo_deg }}°</span>
+          <span v-if="b.servo_deg != null" class="rv-num rv-small rv-muted">{{ b.servo_deg }}°</span>
         </div>
-
-        <p v-if="atLimit(b)" class="eq-belt__reason">
-          <rv-status kind="info" label="시작 잠김 — 이 방향 끝입니다. 방향을 바꾸거나 원점을 다시 잡으세요." />
-        </p>
 
         <div class="eq-belt__actions">
           <button type="button" class="rv-btn rv-btn--primary" :aria-label="(b.label || b.name) + ' 시작'"
-                  :disabled="locked(b) || atLimit(b)" @click="startBelt(b)">시작</button>
+                  :disabled="locked(b)" @click="startBelt(b)">시작</button>
           <button type="button" class="rv-btn" :aria-label="(b.label || b.name) + ' 정지'"
                   :disabled="!b.port" @click="stopBelt(b)">정지</button>
           <rv-menu :label="beltMenuLabel(b)" :items="beltMenu(b)" :disabled="locked(b)" @select="onBeltMenu(b, $event)" />
@@ -248,7 +233,7 @@
 </section>`,
 
     setup() {
-      const { ref, reactive, computed, nextTick, onActivated, onDeactivated, onBeforeUnmount } = Vue;
+      const { ref, computed, nextTick, onActivated, onBeforeUnmount } = Vue;
       const s = RVS.store;
       const api = RVS.api;
       const fmt = RVS.fmt;
@@ -278,55 +263,41 @@
       /* 잠금은 벨트별(이름 키)이다 + 포트가 비어 있으면 어차피 못 쓴다 */
       const locked = (belt) => s.isBeltBusy(belt) || !belt.port || cycle.value;
 
-      /* 소프트 리밋 축이 지금 방향으로 더 갈 수 있는가. 갈 수 없으면 펌웨어가
-         START 를 거부하므로, 눌러보고 실패하는 대신 버튼을 미리 잠그고 이유를 보여준다. */
-      function atLimit(belt) {
-        if (!belt.limit_rev || belt.pos_rev === undefined) return false;
-        return belt.dir === 'ccw' ? belt.pos_rev <= 0 : belt.pos_rev >= belt.limit_rev;
-      }
-
-      /* 끝(상한)에 닿았을 때만 강조한다. 0 은 원점이라 정상 상태다 —
-         여기까지 경고로 칠하면 원점을 잡을 때마다 경고가 뜬다. */
-      const atEnd = (belt) => belt.pos_rev >= belt.limit_rev;
-
+      /* 엔코더가 없어 RPM 은 측정하지 못한다. duty 는 '설정 속도'라 정지 중에도 남는다 — 도는지는 running 으로 본다.
+         정지를 '0%' 로 그리면 설정이 0 인 것처럼 읽히므로 '정지 · 설정 N%' 로 보인다. */
       function beltStatus(belt) {
+        const set = Number.isFinite(belt.duty) ? `${Math.round(belt.duty)}%` : '';
         if (!belt.connected) return { kind: 'stop', text: '포트 닫힘' };
         if (!belt.enabled) return { kind: 'warn', text: '드라이버 꺼짐' };
-        if (belt.running) return { kind: 'run', text: `${Number(belt.rpm || 0).toFixed(1)} RPM` };
-        if (atLimit(belt)) return { kind: 'stop', text: belt.dir === 'ccw' ? '정지 · 원점 끝' : '정지 · 리밋 끝' };
-        return { kind: 'stop', text: '정지' };
+        if (belt.running) return { kind: 'run', text: `속도 ${set || '—'}` };
+        return { kind: 'stop', text: set ? `정지 · 설정 ${set}` : '정지' };
       }
-
-      /* 회전수가 아니라 mm 로 보여준다. 사람이 기구를 mm 로 재기 때문이다. */
-      const strokeMm = (belt) => Math.round(belt.stroke_mm);
-      const posMm = (belt) => Math.round(Number(belt.pos_rev || 0) * belt.mm_per_rev);
 
       function beltMeta(belt) {
         const motor = belt.motor ? ` · 모터 M${belt.motor}` : '';
-        const stroke = belt.limit_rev ? ` · 행정 ${strokeMm(belt)} mm` : '';
-        return `${belt.port}${motor}${stroke}`;
+        return `${belt.port}${motor}`;
       }
 
-      /* ---- RPM ---- */
-      const rpmOk = (belt) => {
-        const raw = belt.rpmInput;
+      /* ---- 속도(PWM 듀티 %) ---- */
+      const dutyOk = (belt) => {
+        const raw = belt.dutyInput;
         if (raw === '' || raw === null || raw === undefined) return false;
         const v = Number(raw);
-        return Number.isFinite(v) && v >= RPM_MIN && v <= RPM_MAX;
+        return Number.isInteger(v) && v >= DUTY_MIN && v <= DUTY_MAX;
       };
 
-      /* −/+ 는 한 번 누를 때마다 목표 속도를 바로 보낸다(레거시: 숫자 입력의 스피너도 change 마다 전송). */
-      async function stepRpm(belt, delta) {
-        const cur = Number(belt.rpmInput);
-        const base = Number.isFinite(cur) ? cur : RPM_MIN;
-        belt.rpmInput = Math.min(RPM_MAX, Math.max(RPM_MIN, Math.round((base + delta) * 100) / 100));
+      /* −/+ 는 한 번 누를 때마다 속도를 바로 보낸다(레거시: 숫자 입력의 스피너도 change 마다 전송). */
+      async function stepDuty(belt, delta) {
+        const cur = Number(belt.dutyInput);
+        const base = Number.isFinite(cur) ? cur : DUTY_MIN;
+        belt.dutyInput = Math.min(DUTY_MAX, Math.max(DUTY_MIN, Math.round(base + delta)));
         await setBeltSpeed(belt);
       }
 
       /* 정지 버튼은 어떤 잠금에서도 눌린다. 그런데 시작은 /speed → /start 두 번에 걸쳐 나가서, 그 사이에 누른
-         정지가 먼저 도착하고 /start 가 뒤따라 나가면 정지했는데 벨트가 돈다(START 는 비상 정지가 끈 드라이버도
-         다시 켠다). 정지(벨트별)와 비상 정지(전체)마다 세대를 올려 두고, 시작은 /start 를 보내기 직전에
-         그 사이 정지가 있었는지 본다. */
+         정지가 먼저 도착하고 /start 가 뒤따라 나가면 정지했는데 벨트가 돈다(정지는 드라이버를 켜 둔 채라 START 가
+         받아들여진다. 비상 정지는 드라이버를 꺼서 START 가 거부되지만 이 확인은 그대로 둔다). 정지(벨트별)와
+         비상 정지(전체)마다 세대를 올려 두고, 시작은 /start 를 보내기 직전에 그 사이 정지가 있었는지 본다. */
       const stopGen = {};
       let estopGen = 0;
       const onEstopStart = () => { estopGen += 1; };
@@ -334,18 +305,24 @@
       onBeforeUnmount(() => window.removeEventListener('rvs:estop-start', onEstopStart));
       const genOf = (belt) => `${stopGen[belt.name] || 0}/${estopGen}`;
       async function startBelt(belt) {
-        if (!rpmOk(belt)) {
-          s.notify(`${belt.label || belt.name}: RPM 은 ${RPM_MIN}~${RPM_MAX} 사이여야 합니다`, 'error');
+        if (!dutyOk(belt)) {
+          s.notify(`${belt.label || belt.name}: 속도는 ${DUTY_MIN}~${DUTY_MAX} 사이 정수(%)여야 합니다`, 'error');
           return;
         }
         const gen = genOf(belt);
-        // 화면의 RPM 을 먼저 반영하고 출발한다. 버튼만 눌러 이전 속도로 도는 것보다
+        // 화면의 속도를 먼저 반영하고 출발한다. 버튼만 눌러 이전 속도로 도는 것보다
         // 눈에 보이는 값과 실제가 같은 편이 안전하다.
         await s.beltCall(belt, async () => {
-          await api.post(`/api/conveyor/${belt.name}/speed`, { rpm: belt.rpmInput });
-          if (genOf(belt) !== gen) throw new Error('정지를 눌러 시작을 취소했습니다');
-          return api.post(`/api/conveyor/${belt.name}/start`);
-        }, `시작 · ${belt.rpmInput} RPM`);
+          try {
+            await api.post(`/api/conveyor/${belt.name}/speed`, { duty: belt.dutyInput });
+            if (genOf(belt) !== gen) throw new Error('정지를 눌러 시작을 취소했습니다');
+            return await api.post(`/api/conveyor/${belt.name}/start`);
+          } catch (err) {
+            // 드라이버가 꺼져 있으면(비상 정지 뒤) 서버가 펌웨어의 ERR: DISABLED 를 그대로 올린다 — 서버 문구는 두고 할 일을 앞에 붙인다.
+            // 그 밖의 오류(ERR: TIMER CONFLICT 등)는 손대지 않고 서버 문구 그대로 beltCall 이 오류 토스트로 보인다.
+            throw /DISABLED/i.test(err.message) ? new Error(`${DRIVER_OFF_MSG} (${err.message})`) : err;
+          }
+        }, `시작 · 속도 ${belt.dutyInput}%`);
       }
 
       async function stopBelt(belt) {
@@ -354,26 +331,30 @@
       }
 
       async function setBeltSpeed(belt) {
-        if (!rpmOk(belt)) return;   // 이유는 입력칸 아래에 이미 보인다
+        if (!dutyOk(belt)) return;   // 이유는 입력칸 아래에 이미 보인다
         await s.beltCall(belt,
-          () => api.post(`/api/conveyor/${belt.name}/speed`, { rpm: belt.rpmInput }),
-          `목표 속도 ${belt.rpmInput} RPM`);
+          () => api.post(`/api/conveyor/${belt.name}/speed`, { duty: belt.dutyInput }),
+          `속도 ${belt.dutyInput}%`);
       }
 
       /* ---- 방향 ---- */
+      // 펌웨어 줄 규약은 'CW'/'CCW' 대문자다. 어느 쪽으로 오든 옵션 값('cw'/'ccw')과 맞춘다.
+      const dirOf = (belt) => String(belt.direction || '').toLowerCase();
+      // 달리는 중이면 펌웨어가 방향 변경을 거부한다(ERR: RUNNING). 눌러 보고 실패하는 대신 미리 잠그고 이유를 보인다.
       const dirOptions = (belt) => [
-        { value: 'cw', label: '정방향', disabled: locked(belt) },
-        { value: 'ccw', label: '역방향', disabled: locked(belt) },
+        { value: 'cw', label: '정방향', disabled: locked(belt) || !!belt.running },
+        { value: 'ccw', label: '역방향', disabled: locked(belt) || !!belt.running },
       ];
 
       async function toggleBeltDir(belt, next) {
-        // 구동 중이면 펌웨어가 잠깐 멈춘 뒤 저속에서 다시 가속한다(부하 상태 즉시 반전 = 탈조).
         await s.beltCall(belt,
           () => api.post(`/api/conveyor/${belt.name}/dir`, { direction: next }),
           next === 'cw' ? '정방향 전환' : '역방향 전환');
       }
 
-      /* ---- 분류 게이트: 서보가 보드에 하나뿐이라 servo_deg 를 싣고 오는 M1 축 카드에만 붙는다 ---- */
+      /* ---- 분류 게이트: 서보가 보드에 하나뿐이라 servo_deg 를 싣고 오는 M1 축 카드에만 붙는다.
+         포트를 아직 안 열어 값이 없을 때도 카드가 모터 번호로 알아본다. ---- */
+      const hasGate = (belt) => belt.servo_deg !== undefined || belt.motor === 1;
       const gateOptions = (belt) => [
         { value: GATE_CLOSE_DEG, label: '닫힘', disabled: locked(belt) },
         { value: GATE_OPEN_DEG, label: '열림', disabled: locked(belt) },
@@ -385,94 +366,37 @@
           deg === GATE_OPEN_DEG ? '게이트 열림' : '게이트 닫힘');
       }
 
-      /* ---- 위치 이동(소프트 리밋 축) ----
-         '목표' 입력칸은 사용자가 치는 동안만 이 화면이 쥔다(moveDraft). store 는 멈춰 있는 동안 belt.moveInput 을
-         실제 위치로 맞추는데, 숫자를 치는 도중에 폴링이 그 값을 되돌려 놓으면 안 된다.
-         draft 가 있으면 그 값이, 없으면 belt.moveInput(실제 위치)이 칸에 보인다.
-         draft 를 남겨 두면 원점·끝점을 새로 잡은 뒤에도 칸이 옛 값이라 '이동' 이 엉뚱한 곳으로 간다 —
-         위치가 바뀌는 동작 뒤와 화면을 떠날 때 비운다. */
-      const moveDraft = reactive({});
-      const clearMoveDraft = (belt) => { delete moveDraft[belt.name]; };
-      onDeactivated(() => Object.keys(moveDraft).forEach((name) => delete moveDraft[name]));
-      const moveShown = (belt) => moveDraft[belt.name] ?? belt.moveInput;
-      const moveOk = (belt) => {
-        const raw = moveShown(belt);
-        if (raw === '' || raw === null || raw === undefined) return false;
-        const v = Number(raw);
-        return Number.isFinite(v) && v >= 0 && v <= strokeMm(belt);
-      };
-
-      /* 누르는 순간 그 위치로 이동하고 펌웨어가 스스로 멈춘다. */
-      async function moveBeltTo(belt) {
-        if (!moveOk(belt)) return;
-        const mm = Math.round(Number(moveShown(belt)));
-        const ok = await s.beltCall(belt,
-          () => api.post(`/api/conveyor/${belt.name}/move`, { mm }),
-          `${mm}mm 로 이동`);
-        // 실패하면 친 값을 남겨 고쳐서 다시 누르게 한다. 성공하면 칸을 store 에 돌려주되, 움직이는 동안은
-        // store 가 칸을 건드리지 않으므로 옛 위치가 아니라 목표를 보이게 해 둔다(멈추면 실제 위치로 맞춘다).
-        if (ok) {
-          belt.moveInput = mm;
-          clearMoveDraft(belt);
-        }
-      }
-
-      /* ---- 위험색 메뉴: 토크 해제·포트 해제·원점·끝점 ----
-         토크를 풀면 축을 손으로 밀 수 있다(원점을 잡을 자리로 옮길 때). 단 손으로 민 거리는
-         펌웨어가 모르므로 그 뒤에는 반드시 원점을 다시 잡아야 한다.
-         포트 해제는 펌웨어를 다시 올리려고 COM 포트를 놓는 것이다(다음 START 에서 자동 재연결).
-         원점 = 지금 자리를 0 으로, 끝점 = 지금 자리를 가동 범위의 끝으로 저장(리밋 스위치가 없다). */
+      /* ---- 위험색 메뉴: 드라이버(토크) 해제·포트 해제 ----
+         드라이버를 끄면 모터가 프리런으로 멈춰 벨트를 손으로 돌릴 수 있고, 다시 켤 때까지 START 는 거부된다.
+         포트 해제는 펌웨어를 다시 올리려고 COM 포트를 놓는 것이다(다음 START 에서 자동 재연결). */
       function beltMenu(belt) {
-        const items = [];
-        if (belt.limit_rev) {
-          items.push({ id: 'zero', label: '원점 설정', danger: true }, { id: 'end', label: '끝점 설정', danger: true }, { separator: true });
-        }
-        items.push(
+        return [
           belt.enabled === false
-            ? { id: 'torque', label: '토크 걸기' }
-            : { id: 'torque', label: '토크 해제', danger: true },
+            ? { id: 'torque', label: '드라이버 켜기' }
+            : { id: 'torque', label: '드라이버 해제', danger: true },
           { id: 'release', label: '포트 해제', danger: true },
-        );
-        return items;
+        ];
       }
 
-      const beltMenuLabel = (belt) =>
-        `${belt.label || belt.name} 더보기 — ${belt.limit_rev ? '원점·끝점 설정, ' : ''}토크 해제, 포트 해제`;
+      const beltMenuLabel = (belt) => `${belt.label || belt.name} 더보기 — 드라이버 해제, 포트 해제`;
 
       function onBeltMenu(belt, id) {
-        if (id === 'zero') return setBeltZero(belt);
-        if (id === 'end') return setBeltEnd(belt);
         if (id === 'torque') return toggleBeltTorque(belt);
         if (id === 'release') return releaseBelt(belt);
       }
 
-      // 기준(원점·끝점)이나 토크가 바뀌면 옛 목표 draft 는 엉뚱한 위치다. 요청이 실패·시간 초과여도
-      // 서버가 실행했을 수 있어 결과와 상관없이 비운다 — 칸은 실제 위치로 돌아간다.
-      async function setBeltZero(belt) {
-        await s.beltCall(belt, () => api.post(`/api/conveyor/${belt.name}/zero`), '현재 위치를 원점으로 설정');
-        clearMoveDraft(belt);
-      }
-
-      /* 끝점 티칭. 원점을 잡고 반대쪽 끝까지 몰고 온 뒤 누른다 — 자로 재서 config 에
-         옮겨 적는 대신 축을 직접 움직여 정하므로 값이 실물과 어긋나지 않는다. */
-      async function setBeltEnd(belt) {
-        await s.beltCall(belt, () => api.post(`/api/conveyor/${belt.name}/end`), '현재 위치를 가동 범위 끝으로 저장');
-        clearMoveDraft(belt);
-      }
-
       async function toggleBeltTorque(belt) {
-        const next = belt.enabled === false;   // 지금 풀려 있으면 걸고, 걸려 있으면 푼다
+        const next = belt.enabled === false;   // 지금 꺼져 있으면 켜고, 켜져 있으면 끈다
         await s.beltCall(belt,
           () => api.post(`/api/conveyor/${belt.name}/enable`, { enabled: next }),
-          next ? '토크 걸림' : '토크 해제 — 손으로 옮긴 뒤 원점을 다시 잡으세요');
-        clearMoveDraft(belt);
+          next ? '드라이버 켜짐' : '드라이버 해제 — 멈췄습니다. 다시 돌리려면 드라이버를 켜세요');
       }
 
       async function releaseBelt(belt) {
         await s.beltCall(belt, () => api.post(`/api/conveyor/${belt.name}/release`), 'COM 포트 해제 — 펌웨어 업로드 가능');
       }
 
-      /* 비상 정지로 꺼진 스텝 드라이버만 다시 켠다 — 아무것도 움직이지 않는다. 실패는 store 가 토스트로 알린다. */
+      /* 비상 정지로 꺼진 드라이버만 다시 켠다 — 아무것도 움직이지 않는다. 실패는 store 가 토스트로 알린다. */
       async function resetDrivers() {
         s.busy.conveyor = true;
         try {
@@ -591,11 +515,11 @@
 
       return {
         s, fmt, recording, cycle,
-        RPM_MIN, RPM_MAX, RPM_STEP,
+        DUTY_MIN, DUTY_MAX, DUTY_STEP,
         // 컨베이어
-        beltsErr, beltsLoading, loadBelts, locked, atLimit, atEnd, beltStatus, beltMeta, strokeMm, posMm,
-        rpmOk, stepRpm, startBelt, stopBelt, setBeltSpeed, dirOptions, toggleBeltDir, gateOptions, setGate,
-        moveDraft, moveShown, moveOk, moveBeltTo, beltMenu, beltMenuLabel, onBeltMenu, resetDrivers,
+        beltsErr, beltsLoading, loadBelts, locked, beltStatus, beltMeta,
+        dutyOk, stepDuty, startBelt, stopBelt, setBeltSpeed, dirOf, dirOptions, toggleBeltDir, hasGate, gateOptions, setGate,
+        beltMenu, beltMenuLabel, onBeltMenu, resetDrivers,
         // 로봇 팔
         toggleTeleop, homeOpen, homeBtn, homingSpeed, goHome, armMenu, onArmMenu, joints, limText, retryStatus,
         // 카메라

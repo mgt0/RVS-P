@@ -73,19 +73,13 @@ class TestResolveDataDir:
     @pytest.mark.parametrize("value", [
         "lerobot_data",              # 같다
         "lerobot_data/dev",          # 안 — 가짜 녹화가 진짜 데이터에 섞인다
-        ".",                         # 밖 — <data>/calibration.json 이 사용자의 실제 보정 파일이 된다
+        ".",                         # 밖(부모) — <data>/logs/train 같은 격리 경로가 실제 경로와 같아진다
         "..",
     ])
     def test_실제_데이터와_겹치면_거부한다(self, value):
         with pytest.raises(SystemExit) as exc:
             dev_sim.resolve_data_dir(value, self.real)
         assert "겹칩니다" in str(exc.value) or "같습니다" in str(exc.value)
-
-    def test_실제_보정_파일과_같은_경로가_되면_거부한다(self):
-        # 실제 데이터 폴더를 따로 설정한 PC 에서도 레포 루트(=실제 calibration.json 자리)는 막는다
-        with pytest.raises(SystemExit) as exc:
-            dev_sim.resolve_data_dir(".", [Path("D:/elsewhere")])
-        assert "calibration.json" in str(exc.value)
 
     def test_설정에_적힌_실제_수집_루트도_보호한다(self, tmp_path):
         real = tmp_path / "real_data"

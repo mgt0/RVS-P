@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """UI 개발·QA 전용 격리 시뮬레이션 서버.
 
-실기 서버(5000/5001)와 포트·데이터·보정 파일을 전부 분리해서, 사용자가 실물 로봇을
+실기 서버(5000/5001)와 포트·데이터를 전부 분리해서, 사용자가 실물 로봇을
 쓰는 동안에도 화면을 띄워볼 수 있다. 하드웨어는 열지 않는다(OMX_SIMULATE=1 고정).
 
     .venv\\Scripts\\python.exe scripts\\dev_sim.py                          → http://127.0.0.1:5100
@@ -13,9 +13,6 @@
 격리하는 것
   * 포트: --port(화면·API) / --stream-port(MJPEG). 5000·5001 은 사용자 실기 서버 자리라 거부한다.
   * 데이터: --data 폴더 아래(녹화·검사 촬영·배경·리그 보정·모델). 실제 lerobot_data 는 건드리지 않는다.
-  * 끝점 보정: <data>/calibration.json. 시뮬레이션에서도 컨베이어 '끝점 설정'이 calibration.json 을
-    덮어쓰는데(conveyor.set_end), 그 파일에는 사용자가 실측한 값(LM 가이드 180mm)이 들어 있다.
-    경로를 안 돌려 두면 QA 한 번에 실측값이 날아간다.
   * 학습 로그: <data>/logs/train. 가짜 실행 폴더(run.json·metrics.jsonl)를 만들어 '실제 학습 로그'
     모드를 확인할 때 실제 logs/train 을 어지럽히지 않는다(실기 서버가 가장 최근 실행을 따라 읽는다).
   * 자동 사이클의 픽 궤적: <data>/waypoints/pick_place.json (cycle.pick_checkpoint 는 비운다). 기본값
@@ -79,7 +76,7 @@ def resolve_data_dir(value: str, protected: list[Path]) -> Path:
     """격리 데이터 폴더를 확정한다. 실제 데이터와 겹치면 서버를 띄우지 않는다.
 
     protected 의 폴더와 같거나 그 안/밖(부모)이면 거부한다 — 안이면 가짜 녹화가 진짜 데이터에 섞이고,
-    밖(예: 레포 루트)이면 <data>/calibration.json 이 사용자의 실제 calibration.json 이 된다.
+    밖(예: 레포 루트)이면 <data>/logs/train 같은 격리 경로가 실제 경로와 같아진다.
     """
     data = Path(value).expanduser()
     if not data.is_absolute():
@@ -88,8 +85,6 @@ def resolve_data_dir(value: str, protected: list[Path]) -> Path:
     for real in (Path(p).resolve() for p in protected):
         if data == real or real in data.parents or data in real.parents:
             raise SystemExit(f"--data {data} 가 실제 데이터 폴더({real})와 겹칩니다. 격리 폴더를 따로 지정하세요.")
-    if (data / "calibration.json") == (ROOT / "calibration.json").resolve():
-        raise SystemExit(f"--data {data} 의 calibration.json 이 실제 보정 파일과 같습니다. 격리 폴더를 따로 지정하세요.")
     return data
 
 
@@ -143,13 +138,7 @@ def main(argv: list[str] | None = None) -> None:
     app = create_app(cfg)
     hub = app.extensions["omx_hub"]
 
-    # create_app() 은 HardwareHub 를 만들며 실제 calibration.json 을 읽는다. 서버가 뜨기 전이라
-    # 아직 아무것도 쓰지 않았다 — 저장 경로를 격리 폴더로 돌리고 메모리의 값도 비운다(격리 폴더에
-    # 이미 있으면 그걸 읽는다). 비우지 않으면 첫 저장이 실제 값을 격리 파일에 복사한다.
-    hub.calibration._path = data / "calibration.json"
-    hub.calibration._data = {}
-    hub.calibration._load()
-    # 학습 로그도 격리한다(위 docstring).
+    # 학습 로그를 격리한다(위 docstring).
     hub.training._log_root = data / "logs" / "train"
 
     # MJPEG 은 두 번째 포트에서도 서빙한다(브라우저의 오리진당 연결 한도 때문 — run.py 참고).

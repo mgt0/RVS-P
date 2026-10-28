@@ -127,8 +127,9 @@ def emergency_stop():
 
 @bp.post("/emergency_reset")
 def emergency_reset():
-    """비상 정지 해제 — 비상 정지가 꺼둔(DISABLE) 스텝 드라이버를 다시 켠다.
+    """비상 정지 해제 — 비상 정지가 꺼둔(DISABLE) 벨트 드라이버를 다시 켠다.
 
+    펌웨어는 DISABLE 상태의 START 를 거부하므로 비상 정지 뒤에는 이걸 먼저 해야 다시 구동할 수 있다.
     ENABLE 만 한다. 벨트를 돌리거나 축을 옮기지 않는다 — 다시 구동하는 것은 사람이
     각 START 로 한다. 한 축이 실패해도 나머지는 계속 시도한다(emergency_stop 과 같은 원칙).
 

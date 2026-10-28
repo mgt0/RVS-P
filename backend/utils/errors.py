@@ -98,3 +98,14 @@ class ConveyorError(OmxError):
 
     status_code = 503
     code = "conveyor_unreachable"
+
+
+class ConveyorRejectedError(ConveyorError):
+    """보드가 응답했지만 명령을 거부했다(ERR: DISABLED·RUNNING·DUTY 범위·TIMER CONFLICT 등).
+
+    연결 문제가 아니라 요청이 보드의 지금 상태와 맞지 않는 것이라 400 이다. ConveyorError 의 하위 클래스라
+    기존에 ConveyorError 를 잡던 자리(STATUS 조회 실패 무시 등)는 그대로 동작한다.
+    """
+
+    status_code = 400
+    code = "conveyor_rejected"

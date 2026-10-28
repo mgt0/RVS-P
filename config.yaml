@@ -79,11 +79,11 @@ cameras:
   # nth 와 실제 카메라의 대응은 `python scripts/find_cameras.py` 로 확인한다.
   # 물리 배치(front/back/left/right/top)와 순서가 다르면 nth 값만 바꿔 맞춘다.
   #
-  # fps 15 인 이유는 USB 대역폭이다. 5대 동시 개방 실측(MJPG, 640x480):
+  # fps 15 인 이유는 USB 대역폭이다. 5대 동시 개방 실측(당시 리그, 지금은 4대)(MJPG, 640x480):
   #   30fps → 3/5 대만 열림 (나머지는 open 단계에서 아이소크로너스 대역폭 예약 실패)
   #   15fps → 5/5 대
   # 30fps 로 되돌리려면 카메라를 서로 다른 USB 컨트롤러로 분산해야 한다.
-  # 지금은 5대가 허브 2개(+직결 1)에 몰려 있다.
+  # 당시에는 5대가 허브 2개(+직결 1)에 몰려 있다.
   #
   # exposure: 가로 줄무늬(조명 플리커 밴딩)가 보이면 각 카메라에 추가한다.
   #   MSMF 기준 log2 초 → -6 = 1/64초, -5 = 1/32초, -4 = 1/16초.
@@ -123,13 +123,10 @@ cameras:
   #   큐브가 놓인 범위의 합집합에 3~5% 여유를 둔 것(2026-10-28). 물체가 멈추는 위치나
   #   카메라 자세가 바뀌면 다시 잡을 것. 리그 캘리브레이션 후에는 줄을 지워도 된다 —
   #   그때는 작업 공간 박스의 투영으로 자동 계산된다.
-  cam1: { label: C1 하단 캠, match_name: Arducam, nth: 2, vflip: true, lock_white_balance: false, view_dir: [ 0.0,   -1.0,   0.0   ], roi: [0.03, 0.00, 0.88, 0.88], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -6, brightness: -64, power_line_hz: 60, target_mean: 120, contrast: 36, gamma: 90 }  # C1 하단 뷰
   cam2: { label: C2 하단 대각 캠 1, match_name: Arducam, nth: 0, vflip: false, lock_white_balance: false, view_dir: [-0.7071, 0.0,   0.7071], roi: [0.31, 0.33, 0.65, 0.76], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -6, brightness: -32, power_line_hz: 60, target_mean: 120, contrast: 36, gamma: 90 }  # C2 왼쪽 수평 (방위 -45°, 고도 0°)
-  cam3: { label: C3 상단 대각 캠 1, match_name: Arducam, nth: 3, vflip: true, hflip: true, lock_white_balance: false, view_dir: [-0.5,  0.7071, 0.5   ], roi: [0.27, 0.00, 0.76, 0.55], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -6, brightness: -32, power_line_hz: 60, target_mean: 120, contrast: 36, gamma: 90 }  # C3 왼쪽 위 대각 (방위 -45°, 고도 +45°)
+  cam3: { label: C3 상단 대각 캠 1, match_name: Arducam, nth: 2, vflip: true, hflip: true, lock_white_balance: false, view_dir: [-0.5,  0.7071, 0.5   ], roi: [0.27, 0.00, 0.76, 0.55], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -6, brightness: -32, power_line_hz: 60, target_mean: 120, contrast: 36, gamma: 90 }  # C3 왼쪽 위 대각 (방위 -45°, 고도 +45°)
   cam4: { label: C4 하단 대각 캠 2, match_name: Arducam, nth: 1, vflip: true, lock_white_balance: false, view_dir: [ 0.7071, 0.0,   0.7071], roi: [0.27, 0.43, 0.62, 0.81], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -6, brightness: -32, power_line_hz: 60, target_mean: 120, contrast: 36, gamma: 90 }  # C4 오른쪽 수평 (방위 +45°, 고도 0°)
-  cam5: { label: C5 상단 대각 캠 2, match_name: Arducam, nth: 4, vflip: true, hflip: true, lock_white_balance: false, view_dir: [ 0.5,  0.7071, 0.5   ], roi: [0.15, 0.24, 0.66, 0.76], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -6, brightness: -32, power_line_hz: 60, target_mean: 120, contrast: 36, gamma: 90 }  # C5 오른쪽 위 대각 (방위 +45°, 고도 +45°)
-  # 글로벌 캠 = 로지텍 C270. 전체 작업 공간 조망용 — 3D 재구성에는 안 쓴다(view_dir 없음).
-  global: { label: 글로벌 뷰 캠, match_name: C270, nth: 0, width: 640, height: 480, fps: 15, fourcc: MJPG }
+  cam5: { label: C5 상단 대각 캠 2, match_name: Arducam, nth: 3, vflip: true, hflip: true, lock_white_balance: false, view_dir: [ 0.5,  0.7071, 0.5   ], roi: [0.15, 0.24, 0.66, 0.76], width: 640, height: 480, fps: 15, fourcc: MJPG, exposure: -6, brightness: -32, power_line_hz: 60, target_mean: 120, contrast: 36, gamma: 90 }  # C5 오른쪽 위 대각 (방위 +45°, 고도 +45°)
 
 recording:
   root: ./lerobot_data
@@ -140,13 +137,18 @@ recording:
   jpeg_quality: 90
   queue_maxsize: 512
 
-# 스텝모터 3축. 키(feed/work/lm)가 API 경로의 이름이 된다: /api/conveyor/feed/start
-# 제어 보드는 STM32F411 BlackPill(DFR0864) 1대 + TB6600 3개 — 세 항목이 같은 COM
-# 포트를 공유하고 motor 번호(M1/M2/M3)로 자기 모터를 지정한다.
+# DC 모터 2축(벨트). 키(feed/work)가 API 경로의 이름이 된다: /api/conveyor/feed/start
+# 제어 보드는 STM32F411 BlackPill(DFR0864) 1대 + HW-095(L298N 듀얼 H-브리지) 1개 — 두 항목이 같은 COM
+# 포트를 공유하고 motor 번호(M1 = A 채널, M2 = B 채널)로 자기 모터를 지정한다.
 # 펌웨어: firmware/conveyor_blackpill/ (빌드 방법·배선은 파일 머리주석 참조)
-#   M1 (컨베이어 1): PUL PA0, DIR PA1, ENA PA2
-#   M2 (컨베이어 2): PUL PA3, DIR PA6, ENA PA7
-#   M3 (LM 가이드) : PUL PB0, DIR PB1, ENA PA8
+#   M1 (공급 벨트) : ENA(PWM) PB0(TIM3_CH3), IN1 PA1, IN2 PA2
+#                    PA0 은 온보드 KEY 버튼이라 출력으로 쓰지 않는다.
+#   M2 (작업 벨트) : ENB(PWM) PA3, IN3 PA6, IN4 PA7
+#   모터 전원 12V 는 L298N 12V 단자에 넣고 GND 는 BlackPill 과 공통으로 묶는다.
+#   ENA/ENB 점퍼는 반드시 뽑는다 — 꽂혀 있으면 항상 전속이라 PWM 이 안 먹는다.
+# 엔코더가 없어 RPM·위치는 모른다. 속도는 PWM 듀티(%)로만 정한다(speed API 의 {"duty": 0~100}).
+# 서버가 달리는 벨트가 있는 동안 0.5초마다 PING 을 보내 펌웨어 워치독을 갱신한다 — 서버가 죽으면
+# 펌웨어가 HOST_TIMEOUT_MS(기본 2초) 뒤 모든 모터를 세우고, 포트를 닫으면(DTR 하강) 즉시 세운다.
 conveyors:
   feed:
     label: 공급 벨트
@@ -154,33 +156,21 @@ conveyors:
     motor: 1
     baudrate: 115200
     timeout_sec: 2.0
+    # 선택(0 초과 100 이하, 기본 40). 연결을 새로 연 뒤 첫 START 전에 한 번 펌웨어에 보내는 속도(PWM 듀티 %).
+    # 현장 실측 필요: 모터가 실제로 도는 최저 듀티(펌웨어 MIN_RUN_DUTY, 임시값 20)보다 높고 물체가 미끄러지지 않는 값
+    default_duty: 40
   work:
     label: 로봇 작업 벨트
     port: COM13
     motor: 2
     baudrate: 115200
     timeout_sec: 2.0
-  lm:
-    label: LM 가이드
-    port: COM13
-    motor: 3
-    baudrate: 115200
-    timeout_sec: 2.0
-    # 소프트 리밋. 리밋 스위치가 없어 펌웨어가 보낸 펄스를 세어 위치를 잡으므로,
-    # 전원을 켤 때마다 축을 한쪽 끝에 두고 대시보드의 '원점 설정' 을 눌러야 한다.
-    #   stroke_mm  : 가동 거리(mm). 레일 전체는 650mm 인데 양 끝에 부딪히지 않도록
-    #                10mm 를 빼고 640 으로 잡았다(640 ÷ 40 = 정확히 16 회전).
-    #   mm_per_rev : 모터 1회전당 이송(mm). GT2 벨트 + 20T 풀리 = 2mm × 20 = 40mm.
-    # 끝까지 못 가면 stroke_mm 을 늘리고, 끝에 부딪히면 더 줄인다.
-    # 값이 실제와 맞는지는 원점을 잡고 한 번 끝까지 보내 보면 안다. 0 이면 리밋 해제.
-    stroke_mm: 180.0   # 실제 가동 거리(사용자 실측 2026-10-12). 레일 650mm 가정은 틀렸다.
-    mm_per_rev: 20.0   # 이론값 40(GT2 20T)이었으나 실측 이동이 절반 — 펌웨어 1회전 펄스(3200)당 실제 20mm.
-                       # TB6600 #3 DIP 가 1/32 로 돼 있으면 이렇게 된다(펌웨어는 1/16 가정). 2026-10-12
+    default_duty: 40   # 현장 실측 필요(위 feed 와 같다)
 
 # 자동 사이클 — 상단 '사이클 시작' 한 번 = 집기 → 벨트 이송 → 5캠 검사 → 분류(양품/불량).
 # 아래 값은 전부 출발점이다. '현장 실측 필요' 표시는 실물에서 재서 맞춘다 — 맞추기 전에는 벨트가 물체를
 # 엉뚱한 자리에 세울 수 있다. 시작 전 점검(픽 동작 파일·벨트·팔로워·카메라·바스켓)에 걸리면 시작하지 않는다.
-# 시간은 전부 초. 이송 거리 = 벨트 속도(belt_rpm) × 시간이라 belt_rpm 을 바꾸면 아래 시간도 다시 맞춘다.
+# 시간은 전부 초. 이송 거리 = 벨트 속도(belt_duty) × 시간이라 belt_duty 를 바꾸면 아래 시간도 다시 맞춘다.
 # 값이 범위를 벗어나면 서버가 뜨지 않는다(벨트 시간 300초·게이트 60초·집기 제한 600초 상한은 ms 로 잘못 적은 값을 거르려는 것).
 cycle:
   # 집기: 학습 없이 시연 궤적을 되돌리는 웨이포인트(scripts/to_waypoints.py 산출 JSON). 상대 경로는 레포 루트 기준.
@@ -195,7 +185,7 @@ cycle:
   pick_settle_sec: 1.0         # 집기가 끝난 뒤 벨트를 돌리기 전에 기다리는 시간(0~60). 그리퍼가 물체를 놓는 동작이 끝나게 한다. 현장 실측 필요
   belt: work                   # 물체를 싣는 벨트 키(feed|work). 현장 실측 필요: 실제 배선에서 팔이 물체를 내려놓는 벨트
   belt_dir: cw                 # 사이클을 시작할 때 명시적으로 설정한다. 현장 실측 필요: 검사 자리 쪽으로 가는 방향
-  belt_rpm: 10                 # 모터축 RPM. 현장 실측 필요: 물체가 미끄러지거나 쏠리지 않는 속도
+  belt_duty: 40                # 벨트 속도(PWM 듀티 %, 0 초과 100 이하). 사이클을 시작할 때 설정한다. 현장 실측 필요: 물체가 미끄러지거나 쏠리지 않는 속도
   to_scan_sec: 3.0             # 집은 물체를 검사 자리까지 옮기는 시간. 현장 실측 필요
   settle_sec: 0.5              # 벨트가 선 뒤 진동이 가라앉기를 기다리는 시간(촬영 전, 0~3). 현장 실측 필요
   resolution: 96               # 3D 복셀 해상도(16~96). 낮추면 판정이 빨라지지만 거칠어진다. 현장 실측 필요: 판정 시간과 형상 거칠기의 균형

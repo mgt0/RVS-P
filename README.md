@@ -14,7 +14,7 @@
 ![PRs welcome](https://img.shields.io/badge/PRs-welcome-ec4899)
 
 **로봇·비전 통합 제품 검사 플랫폼.** 모방학습(LeRobot ACT)으로 동작을 배운 로봇팔이 제품을
-컨베이어에 올리고, 벨트가 멈추면 카메라 5대가 옆면·바닥까지 촬영해 3D 형상을 복원한 뒤
+컨베이어에 올리고, 벨트가 멈추면 카메라 4대가 옆면·윗면까지 촬영해 3D 형상을 복원한 뒤
 정상품 CAD(STL) 모델과 비교해 어긋난 부위를 표시합니다. 로봇·카메라·컨베이어는 웹 대시보드
 하나에서 다룹니다.
 
@@ -65,7 +65,7 @@ OMX_SIMULATE=0 python run.py
 | 화면 | 하는 일 |
 |---|---|
 | 개요 | 스테이션 지도, 알림, 카메라 fps, 팔 관절, 동기 오차, 데이터 준비도, 최근 검사 촬영 |
-| 장비 제어 | 컨베이어 3축(속도·방향·게이트·LM 위치), 텔레오퍼레이션, 홈 복귀, 카메라 실시간 영상 |
+| 장비 제어 | 컨베이어 2축(속도 %·방향·게이트), 텔레오퍼레이션, 홈 복귀, 카메라 실시간 영상 |
 | 수집 | 시연 녹화 세션(ACT 학습용), 검사 샘플 촬영과 라벨, 에피소드 관리 |
 | 학습 | LeRobot 학습 로그 따라 읽기(loss·l1·kld·grdn·lr·처리량·GPU), 데모 곡선 |
 | 검사 | 5캠 촬영 → 3D 형상과 표면 이상(주황), 판정 근거와 신뢰도, CAD 기준 모델 |
@@ -85,7 +85,7 @@ OMX_SIMULATE=0 python run.py
   ```
 
   - 5000·5001 포트는 거부합니다.
-  - 실제 `lerobot_data`, `calibration.json`, 픽 궤적 파일은 건드리지 않습니다.
+  - 실제 `lerobot_data` 와 픽 궤적 파일은 건드리지 않습니다.
 
 ---
 
@@ -107,7 +107,7 @@ OMX_SIMULATE=0 python run.py
 
 ### 카메라 동기화 — 왜 "최신 프레임"이 아닌가
 
-카메라 5대를 각각 스레드로 캡처하면 위상이 제각각입니다. 각 카메라의 *최신* 프레임을 그냥
+카메라 4대를 각각 스레드로 캡처하면 위상이 제각각입니다. 각 카메라의 *최신* 프레임을 그냥
 모으면, 샘플링 주기와 캡처 주기가 같을 때(둘 다 30Hz) 경계에서 어떤 카메라는 새 프레임을,
 어떤 카메라는 직전 프레임을 들고 있어 **한 주기(33ms)만큼 어긋납니다**(엘리어싱).
 
@@ -137,6 +137,30 @@ OMX_SIMULATE=0 python run.py
 한 번에 쓰면 모터가 최대 속도로 튑니다. 서버 종료 시 `atexit` 에서 홈 복귀 → 토크 해제 →
 포트 닫기 순으로 정리하며, 홈 복귀가 실패해도 토크 해제는 `finally` 로 보장합니다.
 
+### 컨베이어 구동부 — DC 모터 + HW-095(L298N 듀얼 H-브리지 모듈)
+
+STM32F411 BlackPill 1보드가 벨트 2개(M1 공급 = A 채널, M2 작업 = B 채널)와 분류 게이트 서보(PB3)를 쥡니다.
+엔코더가 없어 RPM·위치는 모르고, 속도는 PWM 듀티(%)로만 정합니다. LM 가이드(M3)는 없어졌습니다.
+
+| L298N | M1 (공급, A) | M2 (작업, B) |
+|---|---|---|
+| ENA/ENB (PWM) | **PB0** (펌웨어 상수 `PB0_ALT1`, TIM3_CH3) | PA3 (TIM5_CH4) |
+| IN1/IN3 | PA1 | PA6 |
+| IN2/IN4 | PA2 | PA7 |
+
+- **PA0 은 쓰지 않습니다.** 온보드 KEY 버튼이라 출력으로 쓰면 안 됩니다(그래서 M1 ENA 가 PB0 입니다).
+- 모터 전원 12V 는 L298N 12V 단자에, GND 는 BlackPill 과 공통으로 묶습니다.
+- **ENA/ENB 점퍼를 뽑습니다.** 꽂혀 있으면 항상 전속이라 PWM 이 안 먹습니다.
+- EN·IN 핀에 10kΩ 풀다운을 권장합니다 — 리셋·DFU 중에는 핀이 떠 있어 모터가 튈 수 있습니다.
+- 펌웨어 상수(전부 현장 실측 필요): `MIN_RUN_DUTY` 20(모터가 실제로 도는 최저 듀티, 임시값), PWM 2kHz/10bit, `RAMP_MS` 300.
+- **호스트 워치독.** 펌웨어는 모터가 달리는 중 2초(`HOST_TIMEOUT_MS`) 동안 아무 줄도 못 받으면 모든 모터를 세우고,
+  포트가 닫혀도(DTR 하강) 즉시 세웁니다. 서버는 벨트가 하나라도 달리는 동안 포트당 스레드 하나로 0.5초마다 `PING`
+  을 보냅니다(명령과 같은 락). 서버가 죽거나 `release` 하면 벨트가 멈춥니다.
+- `STOP` 은 브레이크, `DISABLE` 은 프리런 정지입니다. `DISABLE`(비상 정지 포함) 뒤에는 `ENABLE`('드라이버 켜기')
+  전까지 `START` 를 거부합니다. `DUTY 0` 은 `STOP` 과 같고 설정한 속도는 남습니다. 속도의 기본값은
+  `config.yaml` 의 `conveyors.*.default_duty`(기본 40)이며 연결 뒤 첫 `START` 전에 한 번 보냅니다.
+- 옛 `config.yaml` 의 `conveyors.lm` 절, `stroke_mm`·`mm_per_rev`, `cycle.belt_rpm` 은 경고만 남기고 무시합니다.
+
 ### 저장 — 두 소비자, 두 Writer
 
 ACT(시퀀스)와 CNN(단일 스냅샷)은 요구가 완전히 다릅니다. 한 클래스에 섞으면 조건 분기가
@@ -156,14 +180,14 @@ CNN 쪽은 에피소드 전체가 아니라 **대표 한 세트**만 남깁니�
 lerobot_data/
 ├── episodes/
 │   └── episode_000042/
-│       ├── camera_cam1/frame_000000.jpg …
+│       ├── camera_cam2/frame_000000.jpg …
 │       ├── camera_cam2/ … camera_cam5/
 │       ├── joint_states.parquet
 │       └── metadata.json
 └── classification/
-    ├── good/<object_id>/{cam1..cam5}.jpg + labels.json
-    └── defect/<object_id>/{cam1..cam5}.jpg + labels.json
-├── background/{cam1..cam5}.jpg   ← '배경 캡처' 가 저장하는 빈 스캔대 참조
+    ├── good/<object_id>/{cam2..cam5}.jpg + labels.json
+    └── defect/<object_id>/{cam2..cam5}.jpg + labels.json
+├── background/{cam2..cam5}.jpg   ← '배경 캡처' 가 저장하는 빈 스캔대 참조
 └── models/<object_id>.stl        ← '기준 모델 등록' 이 저장하는 CAD
 ```
 
@@ -176,7 +200,7 @@ lerobot_data/
 | `sync_skew_ms` | 해당 프레임 세트의 카메라 간 시간 편차 |
 | `leader_joint_{0..4}` | 리더 관절 각도 (deg) |
 | `follower_joint_{0..4}` | 팔로워 관절 각도 (deg) |
-| `ts_{cam1..cam5}` | 카메라별 캡처 시각 (monotonic) |
+| `ts_{cam2..cam5}` | 카메라별 캡처 시각 (monotonic) |
 
 `metadata.json` 의 `monotonic_offset` 을 더하면 monotonic → epoch 로 복원됩니다.
 (monotonic 을 쓰는 이유: wall clock 은 NTP 보정으로 역행할 수 있어 프레임 정렬에 부적합)
@@ -211,7 +235,7 @@ lerobot_data/
 | GET | `/api/readiness` | 데이터 준비도 (ACT 에피소드 수, 양품·불량 물체 수, 목표값) |
 | POST | `/api/emergency_stop` | 비상 정지 — 자동 사이클·텔레오퍼·전 벨트·녹화·시연 세션 일괄 정지 |
 | POST | `/api/emergency_reset` | 비상 정지가 끈 벨트 드라이버만 다시 켠다('드라이버 켜기', 아무것도 움직이지 않는다). 연결된 벨트만 대상 — 끊기거나 release 한 벨트는 포트를 열지 않고 `not_connected` 로 알린다 |
-| GET/POST | `/api/conveyor/status`, `/api/conveyor/<name>/{start,stop,speed,dir,release}` | 컨베이어(다중 벨트) 제어 (자동 사이클 중에는 `stop` 외 구동 명령이 409) |
+| GET/POST | `/api/conveyor/status`, `/api/conveyor/<name>/{start,stop,speed,dir,enable,servo,release}` | 컨베이어(DC 모터 2벨트) 제어 (자동 사이클 중에는 `stop`·`enable(false)` 외 구동 명령이 409). `speed` 본문은 `{"duty": 0~100}`(PWM 듀티 %, 범위 밖이면 400). `dir` 은 달리는 중이면, `start` 는 드라이버가 꺼져 있으면 펌웨어가 거부해 400. 상태 키: `running`(구동 중)·`duty`(설정한 속도)·`direction`·`enabled`·`servo_deg`(M1 만) |
 | GET | `/api/cycle/status` | 자동 사이클 상태 — 단계·진행 메시지·판정 결과·바스켓 개수·시작 가능 여부(`ready`: 막는 이유 `reasons`, 막지는 않는 안내 `notes`). `/api/status` 의 `cycle` 키와 같다 |
 | POST | `/api/cycle/start` | 사이클 한 번 시작(집기 → 벨트 이송 → 검사 → 분류). 준비가 안 됐거나 이미 돌고 있으면 400 + 이유. 점검을 통과하면 팔이 움직이기 전에 벨트 포트를 열고, 못 열면 400 |
 | POST | `/api/cycle/stop` | 즉시 중단 — 벨트와 자율 실행만 세운다(게이트·팔은 그 자리). state 는 `aborted` |
@@ -325,7 +349,7 @@ Success@τ는 **모든 관절이 동시에** 임계값 이내일 때만 성공�
 대시보드를 즉시 확인할 수 있습니다. 이때도 값은 진짜 `compute_metrics()` 를 통과하므로
 차트 로직이 실제와 동일하게 검증됩니다. **LEROBOT 모드**는 학습을 시작하지 않고, 위
 `scripts/train_act.py` 가 남긴 가장 최근 `logs/train/*` 실행을 따라 읽어 실제 loss 곡선을
-같은 차트에 그립니다(`LeRobotTrainer`, 0.5초 폴링). 카메라 5대와 시리얼 포트를 쥔 서버 안에서
+같은 차트에 그립니다(`LeRobotTrainer`, 0.5초 폴링). 카메라 4대와 시리얼 포트를 쥔 서버 안에서
 GPU 학습을 돌릴 이유가 없어서 학습은 계속 서버 밖에서 돌고, 서버를 재시작해도 살아남습니다.
 실행 기록이 없으면 래퍼 사용법을 안내하며 FAILED 로 끝납니다.
 
@@ -350,7 +374,7 @@ LEROBOT 모드에서 달라지는 점:
 
 위 절차(`to_lerobot.py` → `train_act.py`)로 학습이 끝나면, 그 체크포인트로
 팔로워를 자율 제어할 수 있다. 학습(`lerobot-train`)은 의도적으로 이 서버
-프로세스 밖에서 돈다 — 카메라 5대와 시리얼 포트를 쥔 채로 GPU를 몇 시간
+프로세스 밖에서 돈다 — 카메라 4대와 시리얼 포트를 쥔 채로 GPU를 몇 시간
 점유할 수는 없기 때문이다(`backend/core/act_trainer.py`의 `LeRobotTrainer`
 참고). 반대로 **rollout(추론)은 이 프로세스 안에서** 돈다 — 팔로워/카메라를
 이미 `HardwareHub`가 쥐고 있어서다. 관련 코드는 `backend/core/lerobot_bridge.py`
@@ -389,7 +413,7 @@ python scripts/to_waypoints.py --episode 000001          # --tol 로 성김 조�
 - teleop과 rollout은 둘 다 `follower.write()`를 호출하는 루프라 **상호 배타적**이다.
   하나가 실행 중이면 다른 하나는 시작을 거부한다. `SafetyGuard`(소프트리밋 +
   상대변화량 클램프)는 teleop과 완전히 동일하게 rollout에도 적용된다.
-- `frames`로 넘기는 카메라 이름은 `CAMERA_ORDER`(`cam1`~`cam5`)와 일치해야
+- `frames`로 넘기는 카메라 이름은 `CAMERA_ORDER`(`cam2`~`cam5`)와 일치해야
   한다 — 학습 때 못 본 카메라 이름을 주면 정책이 조용히 무시하거나 에러를 낸다.
 
 ### Windows에서 실제로 겪은 문제 4가지 (전부 재현·해결함)
@@ -472,7 +496,7 @@ Windows에서 실물 하드웨어로 끝까지 돌려서 검증하는 과정에�
       많았음(도구 호출 지연으로 인한 측정 오차일 가능성 높음, 코드 자체는 문제
       없어 보임) — 실제 벽시계 기준으로 다시 재볼 것
 - [ ] **병합 후 실물 통합 테스트** — `pytest`(시뮬레이션)는 전부 통과했지만, 컨베이어
-      3축(`lm` 포함) + 모방학습 rollout을 같은 서버 프로세스에서 동시에 띄워보는
+      2축(DC 모터로 교체됨) + 모방학습 rollout을 같은 서버 프로세스에서 동시에 띄워보는
       건 아직 실물로 확인 안 됨. `hardware.py`가 둘의 공통 접점이니 이상 있으면
       거기부터 볼 것.
 - [ ] **CAD 기반 불량검사(`cad.py`)까지 3갈래 완전 통합** — 컨베이어·모방학습은 이번에
@@ -485,7 +509,7 @@ Windows에서 실물 하드웨어로 끝까지 돌려서 검증하는 과정에�
 
 5뷰 스캔 이미지에서 3D 형상을 만들어 마우스로 돌려가며 검사합니다.
 
-**왜 포토그래메트리 대신 Visual Hull인가.** cam1~cam5 의 5뷰는 서로 크게 벌어져
+**왜 포토그래메트리 대신 Visual Hull인가.** cam2~cam5 의 4뷰는 서로 크게 벌어져
 있어 COLMAP 같은 SfM의 특징점 매칭이 거의 실패합니다(보통 겹침 큰 수십~수백 장 필요).
 대신 **실루엣 기반 space carving**을 씁니다:
 
@@ -626,15 +650,15 @@ OrbitControls 대신 최소 궤도 컨트롤을 직접 구현했습니다.
   - 실기에서는 서버를 켠 직후 벨트 포트가 닫혀 있다(첫 명령 때 연다). `ready` 는 포트를 열지 않고 막지도 않는다 —
     `notes` 에 '시작하면 벨트 포트를 엽니다' 라고 안내만 한다. `POST /api/cycle/start` 가 점검을 통과한 뒤 **팔이
     움직이기 전에** 포트를 열고, 못 열면 400 으로 이유를 주며 팔은 움직이지 않는다.
-  - 비상 정지는 벨트 드라이버를 끈다(DISABLE). 펌웨어 START 가 다시 켜 버리므로, 비상 정지 뒤에는 사람이 장비
+  - 비상 정지는 벨트 드라이버를 끈다(DISABLE). 펌웨어가 DISABLE 상태의 START 를 거부하므로, 비상 정지 뒤에는 사람이 장비
     제어의 '드라이버 켜기'(`POST /api/emergency_reset`)로 명시적으로 풀어야 시작할 수 있다. 포트가 닫혀 있던 동안
     꺼진 드라이버는 시작이 포트를 연 뒤에 확인해 같은 이유로 거부한다.
 - 사이클이 도는 동안 서버가 텔레오퍼·rollout·녹화·시연 시작, 수동 촬영(`/api/scan/capture`·`background`·
-  `calibrate/shot`), 벨트 구동 명령(start·speed·dir·move·servo·zero·end·release), 홈 복귀를 409(`cycle_busy`)로
+  `calibrate/shot`), 벨트 구동 명령(start·speed·dir·servo·release), 홈 복귀를 409(`cycle_busy`)로
   거부한다. 사이클 도중에 배경을 찍으면 벨트 위 물체가 배경에 박혀 이후 판정이 모두 틀어지기 때문이다. 계산만
   하는 `reconstruct`·`calibrate/solve` 는 막지 않는다. 벨트 `stop`·비상 정지·`/api/cycle/stop` 은 언제나 된다.
   **사람이 어떤 벨트든 세우거나 드라이버를 해제하면 사이클도 함께 중단된다**(사이클이 다음 단계에서 벨트를 다시
-  돌리지 않게). 서보 게이트와 COM 포트를 세 축이 공유하므로 사이클 중 수동 조작은 보수적으로 전부 막고, 다른
+  돌리지 않게). 서보 게이트와 COM 포트를 두 축이 공유하므로 사이클 중 수동 조작은 보수적으로 전부 막고, 다른
   벨트를 세워도 사이클을 멈추는 쪽이 안전하다.
 - 중단·오류가 나면 벨트 정지와 autorun 정지만 한다(벨트가 먼저 — autorun 정지는 허브 락을 기다릴 수 있다). 게이트와
   팔은 멈춘 자리에 그대로 있다(게이트는 다음 사이클을 시작할 때 닫힘으로 되돌린다). 비상 정지는 가장 먼저 사이클을

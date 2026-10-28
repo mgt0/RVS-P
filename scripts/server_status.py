@@ -61,15 +61,12 @@ def main() -> None:
 
         conv = get(f"{args.base}/api/conveyor/status")
         if conv:
-            print("\n스텝모터:")
+            print("\n컨베이어(DC 모터):")
             for b in conv.get("conveyors", []):
-                pos = ""
-                if b.get("limit_rev"):
-                    pos = f"  위치 {b.get('pos_rev', 0):.2f}/{b['limit_rev']:.2f}rev"
                 print(f"  M{b.get('motor')} {b['name']:5} {b.get('label',''):12} "
                       f"port={b.get('port') or '미설정':6} "
                       f"연결={'O' if b.get('connected') else 'X'} "
-                      f"구동={'O' if b.get('running') else 'X'}{pos}")
+                      f"구동={'O' if b.get('running') else 'X'}")
 
         st = get(f"{args.base}/api/status")
         if st:

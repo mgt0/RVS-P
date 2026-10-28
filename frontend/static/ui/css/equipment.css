@@ -23,16 +23,20 @@
 .eq-belt__meta { font-size: var(--fs-small); line-height: var(--lh-small); color: var(--ink-2); }
 .eq-belt__row { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; }
 .eq-belt__reason { font-size: var(--fs-small); line-height: var(--lh-small); }
+/* 방향 잠금 이유는 분할 버튼 바로 위, 속도 칸의 라벨 줄과 같은 높이에 둔다 — 시작을 눌러도 카드 높이가 변하지 않아 정지 버튼이 밀리지 않는다 */
+.eq-dir { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; min-width: 0; }
+/* flex 로 둔다 — 줄 상자 안의 inline-flex 는 기준선이 어긋나 18px 줄이 20px 가 된다(속도 라벨과 높이가 달라져 카드가 밀린다) */
+.eq-dir .eq-belt__reason { display: flex; justify-content: flex-end; }
 .eq-belt__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: auto; }
 .eq-belt__actions .rv-menu { margin-left: auto; }
 
-/* RPM: 라벨 / [−][숫자][+] */
-.eq-rpm { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.eq-rpm__label { font-size: var(--fs-small); line-height: var(--lh-small); font-weight: 600; color: var(--ink-2); }
-.eq-rpm__ctl { display: inline-flex; align-items: center; border-radius: var(--r-pill); background: var(--bg); }
-.eq-rpm__in { width: 84px; min-height: 44px; padding: 0 4px; border: 0; background: transparent; text-align: center; font-weight: 600; }
-.eq-rpm__in:disabled { background: transparent; }
-.eq-rpm__in[aria-invalid="true"] { box-shadow: inset 0 -2px 0 var(--warn); }
+/* 속도(%): 라벨 / [−][숫자][+] */
+.eq-speed { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.eq-speed__label { font-size: var(--fs-small); line-height: var(--lh-small); font-weight: 600; color: var(--ink-2); }
+.eq-speed__ctl { display: inline-flex; align-items: center; border-radius: var(--r-pill); background: var(--bg); }
+.eq-speed__in { width: 84px; min-height: 44px; padding: 0 4px; border: 0; background: transparent; text-align: center; font-weight: 600; }
+.eq-speed__in:disabled { background: transparent; }
+.eq-speed__in[aria-invalid="true"] { box-shadow: inset 0 -2px 0 var(--warn); }
 .eq-step {
   flex: none;
   width: 44px;
@@ -47,14 +51,6 @@
 }
 .eq-step:active { opacity: 0.6; }
 .eq-step:disabled { color: var(--ink-2); }
-
-/* LM 가이드: 위치 막대 + 목표 위치 입력 */
-.eq-lm { display: flex; flex-direction: column; gap: 10px; }
-.eq-lm__now { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; font-size: 14px; line-height: 19px; }
-.eq-lm__scale { display: flex; justify-content: space-between; gap: 8px; font-size: var(--fs-cap); line-height: var(--lh-cap); color: var(--ink-2); }
-.eq-move { display: flex; align-items: flex-end; gap: 8px; }
-.eq-move .rv-field { flex: 1 1 auto; }
-.eq-move .rv-field input { width: 100%; }
 
 /* 분류 게이트 */
 .eq-gate { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding-top: 12px; border-top: 1px solid var(--line); }

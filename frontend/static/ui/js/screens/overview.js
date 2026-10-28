@@ -79,14 +79,6 @@ RVS.screens.overview = {
                 <text :class="rig.work.kind === 'warn' ? 'ov-t2 ov-t--warn' : 'ov-t2'" x="502" y="152">{{ rig.work.text }}</text>
               </template>
 
-              <template v-if="rig.lm">
-                <text v-if="rig.lm.pos" class="ov-t2" x="514" y="200">{{ rig.lm.pos.text }}</text>
-                <rect class="ov-m-rail" x="514" y="212" width="210" height="10" rx="5"/>
-                <rect v-if="rig.lm.pos" class="ov-m-carriage" :x="514 + rig.lm.pos.ratio * 207" y="206" width="3" height="22" rx="1.5"/>
-                <use :href="'#ov-sym-' + rig.lm.kind" x="514" y="239" width="14" height="14" :class="'ov-sym ov-sym--' + rig.lm.kind"/>
-                <text :class="rig.lm.kind === 'warn' ? 'ov-t2 ov-t--warn' : 'ov-t2'" x="534" y="250">{{ rig.lm.name }} · {{ rig.lm.text }}</text>
-              </template>
-
               <template v-if="rig.follower">
                 <line class="ov-m-link" x1="700" y1="58" x2="700" y2="116"/>
                 <circle class="ov-m-arm" cx="700" cy="40" r="18"/>
@@ -189,7 +181,7 @@ RVS.screens.overview = {
         </section>
 
         <section class="rv-card ov-sync" aria-labelledby="ov-sync-h">
-          <h2 id="ov-sync-h">동기화 · 위치</h2>
+          <h2 id="ov-sync-h">동기화</h2>
           <div class="ov-block">
             <div class="ov-block__row">
               <span>카메라 동기 오차</span>
@@ -202,14 +194,6 @@ RVS.screens.overview = {
               <span v-else-if="skewTol" class="rv-small rv-muted">허용 {{ skewTol }} ms 이하(설정 max_sync_skew_ms) · 넘으면 주의로 바뀜</span>
               <span v-else class="rv-small rv-muted">허용치를 읽지 못해 범위를 표시하지 않습니다.</span>
             </template>
-          </div>
-
-          <div v-for="a in axes" :key="a.key" class="ov-block">
-            <div class="ov-block__row">
-              <span>{{ a.label }} 위치</span>
-              <span class="ov-big">{{ a.mm === null ? '—' : Math.round(a.mm) }}<span class="ov-big__unit"> / {{ Math.round(a.stroke) }} mm</span></span>
-            </div>
-            <rv-gauge :value="a.mm" :min="0" :max="a.stroke" unit=" mm" :decimals="0" :show-value="false" out-text="범위 이탈" />
           </div>
 
           <div class="ov-block ov-ready">
@@ -431,29 +415,21 @@ RVS.screens.overview = {
     });
 
     /* ---------- 리그 지도 + 목록 ---------- */
+    // 엔코더가 없어 RPM 은 모른다. duty 는 '설정 속도'라 정지 중에도 남는다(도는지는 running) — 정지는 '0%' 가 아니라 '정지 · 설정 N%'.
     const beltItem = (b) => {
+      const set = Number.isFinite(b.duty) ? Math.round(b.duty) + '%' : '';
       let kind = 'stop';
-      let text = '정지';
+      let text = set ? '정지 · 설정 ' + set : '정지';
       if (b.enabled === false) { kind = 'warn'; text = '드라이버 꺼짐'; }
-      else if (b.running) { kind = 'run'; text = '가동 ' + (Number(b.rpm) || 0).toFixed(1) + ' RPM'; }
+      else if (b.running) { kind = 'run'; text = '가동 속도 ' + (set || '—'); }
       else if (!b.connected) text = '정지 · 포트 닫힘';
-      // 가동 거리가 있는 축(LM 가이드)만 위치를 가진다. 위치를 모르면(pos_rev 없음) 아무것도 그리지 않는다.
-      const mm = b.stroke_mm > 0 && b.mm_per_rev > 0 && b.pos_rev != null ? b.pos_rev * b.mm_per_rev : null;
-      const pos = mm === null ? null : {
-        ratio: Math.min(1, Math.max(0, mm / b.stroke_mm)),
-        text: '위치 ' + Math.round(mm) + ' / ' + Math.round(b.stroke_mm) + ' mm',
-      };
-      return {
-        key: b.name, name: (b.label || b.name) + (b.motor ? ' M' + b.motor : ''), kind, text, pos,
-        full: pos ? text + ' · ' + pos.text : text,
-      };
+      return { key: b.name, name: (b.label || b.name) + (b.motor ? ' M' + b.motor : ''), kind, text, full: text };
     };
     const mapBelts = computed(() => s.conveyors.map(beltItem));
 
     // 카메라 슬롯 → 지도 좌표. 기구 배치는 데이터가 아니라 구조라서 슬롯 이름(config.yaml)으로 고정한다.
-    // 목록에 없는 슬롯(글로벌 캠 등)은 위쪽 줄에 차례로 놓는다.
+    // 목록에 없는 슬롯은 위쪽 줄에 차례로 놓는다.
     const CAM_POS = {
-      cam1: { x: 406, y: 148, lx: 418, ly: 152, anchor: 'start', ray: false },
       cam3: { x: 300, y: 246, lx: 290, ly: 272, anchor: 'end', ray: true },
       cam2: { x: 334, y: 232, lx: 324, ly: 290, anchor: 'end', ray: true },
       cam4: { x: 418, y: 232, lx: 428, ly: 290, anchor: 'start', ray: true },
@@ -496,7 +472,7 @@ RVS.screens.overview = {
     const rig = computed(() => {
       const by = Object.fromEntries(mapBelts.value.map((b) => [b.key, b]));
       return {
-        feed: by.feed || null, work: by.work || null, lm: by.lm || null,
+        feed: by.feed || null, work: by.work || null,
         cams: mapCams.value, rays: mapCams.value.filter((c) => c.ray),
         leader: mapArms.value[0] || null, follower: mapArms.value[1] || null,
       };
@@ -549,11 +525,6 @@ RVS.screens.overview = {
     const skewTol = computed(() => (s.config.limits && s.config.limits.max_sync_skew_ms) || null);
     const skewNum = computed(() => (skew.value === null ? '—' : skew.value.toFixed(1)));
 
-    // 소프트 리밋(가동 거리)이 있는 축만 위치 지시계를 둔다. 지금은 LM 가이드 하나.
-    const axes = computed(() => s.conveyors
-      .filter((b) => b.stroke_mm > 0 && b.mm_per_rev > 0)
-      .map((b) => ({ key: b.name, label: b.label || b.name, stroke: b.stroke_mm, mm: b.pos_rev == null ? null : b.pos_rev * b.mm_per_rev })));
-
     const readyRows = computed(() => {
       const r = s.readiness;
       const g = r.goals || {};
@@ -566,7 +537,7 @@ RVS.screens.overview = {
 
     return {
       s, fmt, ko, banner, mapWait, camWait, syncWait, jointWait, rig, mapGroups, mapLabel, portsDown,
-      alertList, camRows, followerUp, jointRows, skew, skewTol, skewNum, axes, readyRows,
+      alertList, camRows, followerUp, jointRows, skew, skewTol, skewNum, readyRows,
       cap, capThumbs, capLabel, broken, loadCap,
     };
   },

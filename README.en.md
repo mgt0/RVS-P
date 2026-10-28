@@ -14,8 +14,8 @@
 ![PRs welcome](https://img.shields.io/badge/PRs-welcome-ec4899)
 
 **A robot-vision product inspection platform.** A robot arm trained by imitation learning
-(LeRobot ACT) places a part on the conveyor; when the belt stops, five cameras capture it
-from the sides and bottom, reconstruct its 3D shape, and compare it against the reference
+(LeRobot ACT) places a part on the conveyor; when the belt stops, four cameras capture it
+from the sides and above, reconstruct its 3D shape, and compare it against the reference
 CAD (STL) model to highlight deviating regions. The robot, cameras, and conveyor are all
 operated from a single web dashboard.
 
@@ -67,7 +67,7 @@ Open http://localhost:5000 after `python run.py`. The UI follows high-performanc
 | Screen | What it does |
 |---|---|
 | Overview | Station map, alerts, camera fps, arm joints, sync skew, data readiness, latest inspection capture |
-| Equipment | 3-axis conveyor (speed, direction, gate, LM position), teleoperation, homing, live camera feeds |
+| Equipment | 2-belt conveyor (speed %, direction, gate), teleoperation, homing, live camera feeds |
 | Collect | Demonstration recording sessions (for ACT), inspection-sample capture and labelling, episode management |
 | Train | Follows the LeRobot training log (loss, l1, kld, grdn, lr, throughput, GPU), demo curve |
 | Inspect | 5-camera capture → 3D shape and surface anomalies (orange), evidence and confidence, CAD reference |
@@ -87,7 +87,7 @@ Open http://localhost:5000 after `python run.py`. The UI follows high-performanc
   ```
 
   - It refuses ports 5000 and 5001.
-  - It never touches the real `lerobot_data`, `calibration.json` or pick trajectory.
+  - It never touches the real `lerobot_data` or pick trajectory.
 
 ---
 
@@ -110,7 +110,7 @@ is affected.
 
 ### Camera synchronization — why not "latest frame"
 
-Capturing 5 cameras each on its own thread leaves their phases uncorrelated. Just
+Capturing 4 cameras each on its own thread leaves their phases uncorrelated. Just
 collecting each camera's *latest* frame means that when the sampling period equals the
 capture period (both 30 Hz), at the boundary some cameras hold a new frame and others the
 previous one — **off by one period (33 ms)** (aliasing).
@@ -143,6 +143,31 @@ Homing does not write the target in one shot; it interpolates it at
 server shutdown, `atexit` cleans up in the order home -> release torque -> close port,
 and even if homing fails, torque release is guaranteed by `finally`.
 
+### Conveyor drive — DC motors + HW-095 (L298N dual H-bridge module)
+
+One STM32F411 BlackPill drives two belts (M1 feed = channel A, M2 work = channel B) and the sort-gate
+servo (PB3). There is no encoder, so RPM and position are unknown; speed is set only as PWM duty (%).
+The LM guide (M3) is gone.
+
+| L298N | M1 (feed, A) | M2 (work, B) |
+|---|---|---|
+| ENA/ENB (PWM) | **PB0** (firmware constant `PB0_ALT1`, TIM3_CH3) | PA3 (TIM5_CH4) |
+| IN1/IN3 | PA1 | PA6 |
+| IN2/IN4 | PA2 | PA7 |
+
+- **Do not use PA0.** It is the onboard KEY button and must not be an output (that is why M1 ENA is PB0).
+- Motor supply 12 V goes to the L298N 12 V terminal; tie GND to the BlackPill's GND.
+- **Remove the ENA/ENB jumpers.** With them fitted the motor is always at full speed and PWM has no effect.
+- 10 kΩ pull-downs on the EN and IN pins are recommended — the pins float during reset/DFU and the motors can jerk.
+- Firmware constants (all need on-site measurement): `MIN_RUN_DUTY` 20 (lowest duty at which the motor really turns, provisional), PWM 2 kHz / 10 bit, `RAMP_MS` 300.
+- **Host watchdog.** If a motor is running and the firmware receives no line for 2 s (`HOST_TIMEOUT_MS`) it stops all
+  motors, and it stops immediately when the port is closed (DTR drop). While any belt runs the server sends `PING`
+  every 0.5 s from one thread per port (same lock as commands). If the server dies or the port is released, the belts stop.
+- `STOP` brakes; `DISABLE` free-runs to a stop. After `DISABLE` (including an emergency stop) the firmware refuses
+  `START` until `ENABLE` ('Enable drivers'). `DUTY 0` equals `STOP` and the set speed is kept. The default speed is
+  `conveyors.*.default_duty` in `config.yaml` (default 40), sent once before the first `START` after connecting.
+- Old `conveyors.lm`, `stroke_mm`, `mm_per_rev` and `cycle.belt_rpm` keys in `config.yaml` are ignored with a warning.
+
 ### Storage — two consumers, two writers
 
 ACT (sequences) and CNN (single snapshots) have completely different needs. Mixing them
@@ -164,14 +189,14 @@ the worst kind of data — it quietly erodes training quality.
 lerobot_data/
 ├── episodes/
 │   └── episode_000042/
-│       ├── camera_cam1/frame_000000.jpg …
+│       ├── camera_cam2/frame_000000.jpg …
 │       ├── camera_cam2/ … camera_cam5/
 │       ├── joint_states.parquet
 │       └── metadata.json
 └── classification/
-    ├── good/<object_id>/{cam1..cam5}.jpg + labels.json
-    └── defect/<object_id>/{cam1..cam5}.jpg + labels.json
-├── background/{cam1..cam5}.jpg   <- empty-stage reference saved by 'capture background'
+    ├── good/<object_id>/{cam2..cam5}.jpg + labels.json
+    └── defect/<object_id>/{cam2..cam5}.jpg + labels.json
+├── background/{cam2..cam5}.jpg   <- empty-stage reference saved by 'capture background'
 └── models/<object_id>.stl        <- CAD saved by 'register reference model'
 ```
 
@@ -184,7 +209,7 @@ lerobot_data/
 | `sync_skew_ms` | Inter-camera time skew for that frame set |
 | `leader_joint_{0..4}` | Leader joint angles (deg) |
 | `follower_joint_{0..4}` | Follower joint angles (deg) |
-| `ts_{cam1..cam5}` | Per-camera capture time (monotonic) |
+| `ts_{cam2..cam5}` | Per-camera capture time (monotonic) |
 
 Adding `monotonic_offset` from `metadata.json` restores monotonic -> epoch. (monotonic is
 used because the wall clock can run backwards under NTP correction, which is unsuitable
@@ -220,7 +245,7 @@ for frame ordering.)
 | GET | `/api/readiness` | Data readiness (ACT episode count, good/defect object counts, goals) |
 | POST | `/api/emergency_stop` | Emergency stop — auto cycle + teleop + all belts + recording + demo session at once |
 | POST | `/api/emergency_reset` | Re-enable only the belt drivers the emergency stop switched off ('Enable drivers'; nothing moves). Connected belts only — a disconnected or released belt's port is not opened and is reported as `not_connected` |
-| GET/POST | `/api/conveyor/status`, `/api/conveyor/<name>/{start,stop,speed,dir,release}` | Conveyor (multi-belt) control (during an auto cycle, drive commands other than `stop` return 409) |
+| GET/POST | `/api/conveyor/status`, `/api/conveyor/<name>/{start,stop,speed,dir,enable,servo,release}` | Conveyor (2 DC-motor belts) control (during an auto cycle, drive commands other than `stop` / `enable(false)` return 409). `speed` body is `{"duty": 0-100}` (PWM duty %; 400 out of range). The firmware refuses `dir` while running and `start` while the driver is off (400). State keys: `running`, `duty` (the set speed), `direction`, `enabled`, `servo_deg` (M1 only) |
 | GET | `/api/cycle/status` | Auto cycle state — steps, progress message, verdict, basket counts and whether it can start (`ready`: blocking `reasons`, non-blocking `notes`). Same as the `cycle` key of `/api/status` |
 | POST | `/api/cycle/start` | Start one cycle (pick → belt carry → inspect → sort). 400 + the reason if it is not ready or already running. After the check passes it opens the belt port before the arm moves; 400 if it cannot |
 | POST | `/api/cycle/stop` | Abort at once — stops only the belt and the autorun (the gate and arm stay where they are). State becomes `aborted` |
@@ -315,7 +340,7 @@ pass through the real `compute_metrics()`, so the chart logic is validated ident
 production. **LEROBOT mode** does not start training: it follows the latest `logs/train/*` run
 left by `scripts/train_act.py` (see "Real ACT training" above) and draws the real loss curve on
 the same chart (`LeRobotTrainer`, 0.5 s polling). There is no reason to run GPU training inside a
-server that holds 5 cameras and the serial ports, so training stays outside the server and
+server that holds 4 cameras and the serial ports, so training stays outside the server and
 survives a server restart. With no run on record it shows how to use the wrapper and ends as
 FAILED.
 
@@ -343,7 +368,7 @@ with SSE the chart grows the moment an epoch ends.
 
 Once training finishes via the procedure above (`to_lerobot.py` -> `lerobot-train`), you
 can drive the follower autonomously with that checkpoint. Training (`lerobot-train`)
-deliberately runs outside this server process — it cannot hold 5 cameras and the serial
+deliberately runs outside this server process — it cannot hold 4 cameras and the serial
 ports while occupying a GPU for hours (see `LeRobotTrainer` in
 `backend/core/act_trainer.py`). Conversely, **rollout (inference) runs inside this
 process** — `HardwareHub` already holds the follower/cameras. The relevant code is
@@ -385,7 +410,7 @@ first waypoint does not cause the whole trajectory to be skipped.
 - teleop and rollout are both loops that call `follower.write()`, so they are **mutually
   exclusive**. If one is running, the other refuses to start. `SafetyGuard` (soft limit +
   relative-delta clamp) applies to rollout exactly as it does to teleop.
-- The camera names passed as `frames` must match `CAMERA_ORDER` (`cam1`–`cam5`) — giving
+- The camera names passed as `frames` must match `CAMERA_ORDER` (`cam2`–`cam5`) — giving
   a camera name the policy did not see during training makes it silently ignore it or
   error.
 
@@ -475,7 +500,7 @@ Conflicts were in only two places, `config.yaml` and `run.py`:
       higher than expected (likely a measurement error from tool-call latency; the code
       itself looks fine) — re-measure against a real wall clock.
 - [ ] **Post-merge real integration test** — `pytest` (simulation) all passes, but running
-      the 3-axis conveyor (including `lm`) + imitation learning rollout in the same server
+      the 2-belt conveyor (replaced by DC motors) + imitation learning rollout in the same server
       process at once has not been checked on real hardware. `hardware.py` is the common
       contact point, so start there if something is off.
 - [ ] **Full 3-way integration including CAD-based defect inspection (`cad.py`)** — conveyor
@@ -489,7 +514,7 @@ Conflicts were in only two places, `config.yaml` and `run.py`:
 
 Build a 3D shape from the 5-view scan images and inspect it by rotating with the mouse.
 
-**Why Visual Hull instead of photogrammetry.** The 5 views cam1–cam5 are widely spread
+**Why Visual Hull instead of photogrammetry.** The 4 views cam2–cam5 are widely spread
 apart, so feature matching for an SfM pipeline like COLMAP almost always fails (it usually
 needs tens to hundreds of images with large overlap). Instead, **silhouette-based space
 carving** is used:
@@ -566,18 +591,18 @@ to the good line); `anomaly.flagged_ratio >= defect_ratio` is a defect; anything
     ('starting will open the belt port'). After the check passes, `POST /api/cycle/start` opens the
     port **before the arm moves**; if it cannot, it returns 400 with the reason and the arm does not
     move.
-  - An emergency stop turns the belt driver off (DISABLE). Because the firmware's START turns it back
-    on, after an emergency stop a person must release it explicitly with 'Enable drivers' in
+  - An emergency stop turns the belt driver off (DISABLE). Because the firmware refuses START while
+    disabled, after an emergency stop a person must release it explicitly with 'Enable drivers' in
     Equipment Control (`POST /api/emergency_reset`) before a cycle can start. A driver that was
     switched off while the port was closed is checked after the start opens the port, and refused
     for the same reason.
 - While a cycle runs, the server rejects with 409 (`cycle_busy`): starting teleop / rollout /
   recording / demo, manual captures (`/api/scan/capture`, `background`, `calibrate/shot`), belt drive
-  commands (start, speed, dir, move, servo, zero, end, release) and homing. A background captured
+  commands (start, speed, dir, servo, release) and homing. A background captured
   mid-cycle would bake the object on the belt into the background and ruin every later verdict.
   Compute-only endpoints (`reconstruct`, `calibrate/solve`) are not blocked. Belt `stop`, emergency
   stop and `/api/cycle/stop` always work. **If a person stops any belt or releases its driver, the
-  cycle stops too** (so the cycle never restarts a belt a person has just stopped). The three axes
+  cycle stops too** (so the cycle never restarts a belt a person has just stopped). The two axes
   share the servo gate and the COM port, so manual operation during a cycle is blocked
   conservatively across the board, and stopping even another belt stops the cycle.
 - On an abort or error only the belt and the autorun are stopped (belt first — stopping the autorun

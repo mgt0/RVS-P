@@ -63,7 +63,7 @@ class TestReconstruction:
             views[name] = img
         return views
 
-    def test_5뷰로_메시가_생성된다(self):
+    def test_4뷰로_메시가_생성된다(self):
         result = reconstruct_from_views(
             self._synthetic_views(), resolution=32,
             classification={"label": "good"},
@@ -109,12 +109,11 @@ class TestTextureProjection:
     # 어느 뷰에서 색을 가져왔는지 구분할 수 있게 한다.
     BACKGROUND_BGR = (180, 180, 180)
     VIEW_BGR = {
-        "cam1": (40, 40, 220),    # 빨강
         "cam2": (220, 40, 40),    # 파랑
         "cam3": (40, 220, 220),   # 노랑
         "cam4": (220, 40, 220),   # 자홍
         # 흰색·회색을 쓰면 '배경이 섞여 채도가 죽은 것'과 구분할 수 없어
-        # 다섯 뷰 모두 채도가 높은 색으로 둔다.
+        # 네 뷰 모두 채도가 높은 색으로 둔다.
         "cam5": (40, 220, 120),   # 연두
     }
 
@@ -175,7 +174,7 @@ class TestTextureProjection:
         assert sample[0][0] > sample[0][1] and sample[0][0] > sample[0][2]
 
     def test_파이프라인_결과는_촬영한_색만_쓴다(self):
-        """색이 입혀진 정점은 5뷰에 실제로 찍힌 색 중 하나여야 한다.
+        """색이 입혀진 정점은 4뷰에 실제로 찍힌 색 중 하나여야 한다.
 
         배경(무채색)이 섞이면 채도가 떨어져 어느 물체 색과도 안 맞게 된다.
         """
@@ -285,7 +284,7 @@ class TestTrainingApi:
 # --------------------------------------------------------------- 실루엣 추출
 class TestSilhouette:
     """스캔대가 실험실 한가운데 있으면 배경(선반·창문·현수막)이 물체보다 크게 잡힌다.
-    Otsu 만으로는 배경에 마스크가 붙어 5뷰 교집합이 비고 3D 형상이 통째로 사라진다."""
+    Otsu 만으로는 배경에 마스크가 붙어 4뷰 교집합이 비고 3D 형상이 통째로 사라진다."""
 
     def _scene(self):
         rng = np.random.default_rng(0)
@@ -316,9 +315,9 @@ class TestSilhouette:
         # 그 한 뷰 때문에 전부 깎인다. 위치가 다른 것만으로는 비지 않는다 —
         # 실루엣을 바운딩박스 기준으로 정규화해 맞추기 때문(normalize_silhouette).
         views = {}
-        for i, name in enumerate(("cam1", "cam2", "cam3")):
+        for i, name in enumerate(("cam2", "cam3", "cam4")):
             img = np.zeros((120, 120, 3), np.uint8)
-            if name != "cam3":
+            if name != "cam4":
                 img[40:80, 40:80] = 255
             views[name] = img
         with pytest.raises(EmptyHullError) as exc:
@@ -385,7 +384,6 @@ class TestSilhouetteNormalization:
         from backend.core.reconstruct3d import reconstruct_from_views
         # 같은 구를 뷰마다 다른 크기·위치로 촬영한 상황
         views = {
-            "cam1": self._view(320, 80, 60, 25),     # 작고 왼쪽 위
             "cam2": self._view(320, 160, 120, 70),   # 크고 가운데
             "cam3": self._view(320, 240, 180, 40),
             "cam4": self._view(320, 160, 120, 90),
@@ -412,7 +410,7 @@ class TestSilhouetteNormalization:
 
 # --------------------------------------------------------------- 임의 방향 투영
 class TestArbitraryViewDirections:
-    """리그는 직교 5뷰가 아니라 대각선 4대 + 하단 1대다. 예전 구현은 X·Y·Z 세 축
+    """리그는 직교 뷰가 아니라 대각선 4대(C2~C5)다. 예전 구현은 X·Y·Z 세 축
     중 하나로만 투영해 대각선 카메라를 가장 가까운 축으로 스냅했고, 그래서
     형상이 물체와 전혀 다르게 나왔다."""
 
@@ -665,8 +663,8 @@ class TestDeviationDetection:
     """설계(CAD)와 실물 스캔을 2D 에서 비교해 다른 곳을 정점 색으로 표시한다.
     3D 재구성을 거치지 않는 것이 요점 — 형상은 CAD 를, 이미지는 증거로만 쓴다."""
 
-    DIRS = {"cam1": (0.5, 0.7071, 0.5), "cam2": (-0.5, 0.7071, 0.5),
-            "cam3": (-0.7071, 0, 0.7071), "cam4": (0.7071, 0, 0.7071), "cam5": (0, -1, 0)}
+    DIRS = {"cam2": (-0.7071, 0, 0.7071), "cam3": (-0.5, 0.7071, 0.5),
+            "cam4": (0.7071, 0, 0.7071), "cam5": (0.5, 0.7071, 0.5)}
 
     def _shapes(self, R=40):
         design = np.zeros((R, R, R), bool)
@@ -739,7 +737,7 @@ class TestDeviationDetection:
         R = 40
         design, actual = self._shapes(R)
         sils = {n: self._render(actual, d) for n, d in self.DIRS.items()}
-        partial = {n: d for n, d in self.DIRS.items() if n != "cam5"}     # cam5(하단)의 view_dir 가 빠졌다
+        partial = {n: d for n, d in self.DIRS.items() if n != "cam5"}     # cam5 의 view_dir 가 빠졌다
         verts, faces, _, _ = measure.marching_cubes(design.astype(np.float32), level=0.5)
         verts = verts / (R - 1) * 2 - 1
 
@@ -847,17 +845,17 @@ class TestEmergencyStop:
         assert d["ok"] is True
         assert d["teleop"]["running"] is False
         # 설정된 벨트 전부에 대해 결과가 보고돼야 한다(부분 실패도 항목으로 남는다)
-        assert set(d["conveyors"]) == {"feed", "work", "lm"}
+        assert set(d["conveyors"]) == {"feed", "work"}
         assert d["recording"] in ("idle", "aborted")
 
     def test_드라이버_켜기는_연결된_벨트만_대상으로_한다(self, client, monkeypatch):
         """끊겼거나 release 한 벨트에 ENABLE 을 보내면 포트를 다시 연다(펌웨어 업로드 중이면 방해가 된다)."""
         from backend.core.conveyor import ConveyorController
         hub = client.application.extensions["omx_hub"]
-        target, sent = hub.conveyors["lm"], []
+        target, sent = hub.conveyors["work"], []
         real = target.set_enabled
         monkeypatch.setattr(target, "set_enabled", lambda on: (sent.append(on), real(on))[1])
         monkeypatch.setattr(ConveyorController, "connected", property(lambda self: self is not target))
         d = client.post("/api/emergency_reset").get_json()
-        assert d["conveyors"]["lm"] == "not_connected" and sent == []      # 포트를 열지 않았다
-        assert d["conveyors"]["feed"] == "enabled" and d["conveyors"]["work"] == "enabled"
+        assert d["conveyors"]["work"] == "not_connected" and sent == []      # 포트를 열지 않았다
+        assert d["conveyors"]["feed"] == "enabled"

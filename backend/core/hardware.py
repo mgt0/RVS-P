@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import threading
 
-from ..config import PROJECT_ROOT, AppConfig
+from ..config import AppConfig
 from ..utils.errors import ArmConnectionError, ValidationError
 from .arm_controller import (
     ArmController,
@@ -20,7 +20,6 @@ from .arm_controller import (
     TeleopLoop,
 )
 from .act_trainer import TrainingManager
-from .calibration import Calibration
 from .camera_manager import CameraManager
 from .conveyor import ConveyorController
 from .cycle import CycleBusyError, CycleRunner
@@ -45,12 +44,8 @@ class HardwareHub:
 
         self.recorder = Recorder(cfg.recording, self.cameras, self.leader, self.follower)
         self.training = TrainingManager(cfg.recording.root)
-        # 사람이 직접 찍은 끝점 저장소. config 옆에 두어 설정과 함께 다니게 한다.
-        self.calibration = Calibration(PROJECT_ROOT / "calibration.json")
         self.conveyors = {
-            name: ConveyorController(
-                c, simulate=cfg.server.simulate, calibration=self.calibration, name=name
-            )
+            name: ConveyorController(c, simulate=cfg.server.simulate)
             for name, c in cfg.conveyors.items()
         }
         self._teleop: TeleopLoop | None = None
@@ -121,9 +116,9 @@ class HardwareHub:
         팔로워 토크는 켜둔다. 여기서 토크를 풀면 팔이 중력으로 낙하해
         '정지'가 오히려 충돌을 만든다. 멈춘 자세를 유지하는 것이 정지다.
 
-        상태를 걸어 잠그지 않는다(래치 없음). 스텝 드라이버는 DISABLE 로 꺼두지만
-        펌웨어의 beginRun() 이 START 를 받으면 스스로 다시 ENABLE 하므로, 누른 뒤
-        그냥 평소처럼 시작하면 원래대로 동작한다 — 별도 해제 절차가 필요 없다.
+        벨트 드라이버는 DISABLE 로 꺼둔다. 펌웨어는 DISABLE 상태의 START 를 거부하므로(ERR: DISABLED)
+        다시 구동하려면 /api/emergency_reset('드라이버 켜기' = ENABLE)을 먼저 해야 한다 — 서버 쪽에
+        따로 잠금은 없고, 펌웨어 상태가 곧 잠금이다.
         """
         result: dict = {}
         # 자동 사이클을 가장 먼저 끊는다. 중단 플래그만 세우고 바로 돌아오므로 아래 정지를 늦추지 않는다 —
@@ -158,8 +153,8 @@ class HardwareHub:
 
         belts: dict = {}
         for name, ctrl in self.conveyors.items():
-            # STOP(펄스 중단) 뒤 DISABLE(드라이버 차단)까지 간다. STOP 만 하면
-            # 여자 상태가 남아 홀딩 토크로 축을 계속 붙잡고 발열도 이어진다 —
+            # STOP(브레이크) 뒤 DISABLE(드라이버 차단, 프리런)까지 간다. STOP 만 하면
+            # 드라이버가 켜진 채라 다음 START 가 그대로 받아들여진다 —
             # '전부 off' 가 아니다. 앞 단계가 실패해도 뒤 단계는 반드시 시도한다.
             outcome = []
             for step, action in (("stopped", ctrl.stop), ("disabled", lambda c=ctrl: c.set_enabled(False))):

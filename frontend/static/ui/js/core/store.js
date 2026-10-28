@@ -10,8 +10,9 @@
    ports            /api/ports: { loaded, error, arms[], cameras[], serial_ports[], connected_count, total_count }. 5초 폴링(시리얼 열거가 비싸서 벨트 폴링과 따로 돈다)
    status           /api/status 응답의 모든 키(recording, leader, follower, teleop, autorun,
                     cameras, sync_skew_ms, demo, cycle …) + loaded, error. 0.5초(녹화 중)/1초(사이클 중)/1.5초 폴링.
-   conveyors        /api/conveyor/status 의 벨트 배열. 각 벨트에 rpmInput, moveInput(사용자가
-                    조작 중인 값)이 더 붙는다. 5초/1초(자동 촬영 켜짐) 폴링. 벨트 객체는 '제자리'로
+   conveyors        /api/conveyor/status 의 벨트 배열. 각 벨트에 dutyInput(속도 % 입력칸 값)이 더 붙는다 —
+                    서버의 duty(설정 속도, 정지 중에도 마지막 값이 남는다. 도는지는 running)를 따라가되
+                    그 칸을 치는 중에는 건드리지 않는다. 5초/1초(자동 촬영 켜짐) 폴링. 벨트 객체는 '제자리'로
                     갱신된다 — 새 객체로 갈아끼우면 진행 중인 명령이 옛 객체를 들고 버튼이 굳는다.
    beltBusy         { [벨트 이름]: 진행 중인 명령 수 } 0 보다 크면 그 축만 잠근다. 키는 이름이다(객체 아님).
                     정지는 잠금과 상관없이 나가므로 명령이 겹칠 수 있다 — 먼저 끝난 쪽이 잠금을 풀지 않게 개수로 센다.
@@ -85,7 +86,7 @@
 
     meta: {
       loaded: false,
-      cameras: ['cam1', 'cam2', 'cam3', 'cam4', 'cam5', 'global'],
+      cameras: ['cam2', 'cam3', 'cam4', 'cam5'],
       defect_types: ['scratch', 'dent', 'discoloration', 'crack', 'other'],
       sample_rate_hz: 30,
       max_relative_target: 5,
@@ -235,19 +236,20 @@
     return () => stopListeners.delete(fn);
   }
 
-  /* 서버의 전 벨트 스냅샷을 병합한다. 사용자가 입력 중인 rpmInput 은
+  /* 서버의 전 벨트 스냅샷을 병합한다. 사용자가 입력 중인 dutyInput 은
      폴링이 덮어쓰지 않도록 보존한다(입력 도중 값이 되돌아가면 미치게 답답하다). */
   // 비상 정지를 누른 직후 몇 초의 정지는 '정상 정지'가 아니다. 응답보다 먼저 도착한 일반 폴링이
   // 그 전이를 보더라도 자동 촬영이 나가지 않게 한다.
   const ESTOP_QUIET_MS = 5000;
   let quietUntil = 0;
 
-  /* '목표 위치' 입력칸의 값(moveInput)을 실제 위치(mm)에 맞춘다. 칸이 보이는 값은 이것이 단일 출처다.
-     안 맞추면 원점·끝점을 새로 잡은 뒤에도 칸이 옛 위치에 남아, 그대로 '이동' 을 누르면 엉뚱한 곳으로 간다.
-     움직이는 동안은 건드리지 않는다(이동 목표가 곧 칸의 값이다). 사용자가 치는 중인 값은
-     화면(equipment.js)의 moveDraft 가 따로 쥐고 이 값을 가린다. 폴링 병합과 명령 응답 병합이 같이 쓴다. */
-  function syncMoveInput(belt) {
-    if (!belt.running && belt.mm_per_rev) belt.moveInput = Math.round((belt.pos_rev || 0) * belt.mm_per_rev);
+  /* 속도 % 입력칸(dutyInput)을 서버의 설정 속도(duty)에 맞춘다. 칸을 치는 중(포커스가 그 칸에 있을 때)에는
+     건드리지 않는다. 포커스는 DOM 이 쥐고 있어서 따로 상태를 두지 않는다(칸의 data-duty-belt 는 equipment.js 가 붙인다).
+     폴링 병합과 명령 응답 병합이 같이 쓴다. */
+  function syncDutyInput(belt) {
+    const el = document.activeElement;
+    const typing = !!el && !!el.dataset && el.dataset.dutyBelt === belt.name;
+    if (!typing && Number.isFinite(belt.duty)) belt.dutyInput = Math.round(belt.duty);
   }
 
   function applyConveyors(list, suppressAutoCapture = false) {
@@ -273,14 +275,13 @@
       if (belt) {
         Object.assign(belt, b);
         // 명령이 오가는 동안에는 건드리지 않는다 — 그 응답이 applyBelt 로 맞춘다.
-        if (!store.beltBusy[b.name]) syncMoveInput(belt);
+        if (!store.beltBusy[b.name]) syncDutyInput(belt);
         return belt;
       }
       return {
-        // rpmInput/moveInput 은 사용자가 조작 중인 값이라 서버 응답에 없다
-        // (폴링이 못 덮어쓴다). 처음 만들 때만 현재 값으로 맞춰둔다.
-        rpmInput: b.target_rpm ? Math.round(b.target_rpm * 100) / 100 : 2,
-        moveInput: Math.round((b.pos_rev || 0) * (b.mm_per_rev || 0)),
+        // dutyInput 은 사용자가 조작하는 값이라 서버 응답에 없다. 처음 만들 때 서버의 설정 속도로 맞추고
+        // (값이 없으면 40 — config 의 default_duty 기본값), 이후는 syncDutyInput 이 따라간다.
+        dutyInput: Number.isFinite(b.duty) ? Math.round(b.duty) : 40,
         ...b,
       };
     });
@@ -295,13 +296,13 @@
   /* 명령 응답(벨트 하나의 평면 상태)을 해당 벨트에 병합.
 
      연결 여부만은 같은 포트를 쓰는 축에도 함께 반영한다. 포트는 보드 단위라
-     한 축이 열면 세 축이 다 열린 것인데, 명령 응답은 그 축의 상태만 담고 있어
+     한 축이 열면 두 축이 다 열린 것인데, 명령 응답은 그 축의 상태만 담고 있어
      다음 폴링(5초)까지 나머지 카드가 'PORT CLOSED' 로 남아 보였다. */
   function applyBelt(data) {
     const belt = store.conveyors.find((b) => b.name === data.name);
     if (belt) {
       Object.assign(belt, data);
-      syncMoveInput(belt);
+      syncDutyInput(belt);
     }
     if (data.port && data.connected !== undefined) {
       store.conveyors.forEach((b) => {
@@ -355,7 +356,7 @@
 
   const emergencyStop = () => RVS.estop();
 
-  /* 비상 정지로 꺼진 스텝 드라이버만 다시 켠다 — 아무것도 움직이지 않는다. */
+  /* 비상 정지로 꺼진 드라이버만 다시 켠다 — 아무것도 움직이지 않는다. */
   async function emergencyReset() {
     try {
       const data = await api.post('/api/emergency_reset');
@@ -374,7 +375,7 @@
   }
 
   /* ---------------- 촬영 (레거시 captureScan 의 래퍼) ---------------- */
-  /* 컨베이어가 멈춘 지금의 5뷰를 찍는다. 서버가 벨트 정지를 재확인한다.
+  /* 컨베이어가 멈춘 지금의 4뷰를 찍는다. 서버가 벨트 정지를 재확인한다.
      자동 촬영(capture.auto)은 벨트가 멈추는 순간 applyConveyors 가 이걸 부른다. */
   async function captureNow(opts = {}) {
     if (capture.busy) return null;
