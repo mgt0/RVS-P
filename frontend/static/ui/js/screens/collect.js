@@ -20,7 +20,7 @@
   const EP_PAGE = 30;                                     // 에피소드 표가 한 번에 그리는 행 수
   const INSP_LIMIT = 50;                                  // GET /api/inspections?limit=
   const PREF_KEY = 'rvs.collect.demo';                    // 시연 설정을 기억한다(작업 설명을 매번 다시 쓰지 않게)
-  const STEPS = ['물체를 검사 구역에', '벨트 정지 → 5대 촬영', '라벨 · 주황 평가', '저장 · 물체 돌리기'];
+  const STEPS = ['물체를 검사 구역에', '벨트 정지 → 4대 촬영', '라벨 · 주황 평가', '저장 · 물체 돌리기'];
   const ORANGE_KO = { right: '맞음', partial: '일부만', wrong: '틀림' };
 
   RVS.screens.collect = {
@@ -46,7 +46,7 @@
           </ol>
 
           <div class="co-work">
-            <!-- 촬영 + 5장 + 주황 평가 -->
+            <!-- 촬영 + 4장 + 주황 평가 -->
             <section class="rv-card" aria-labelledby="co-cap-h">
               <div class="rv-card__head">
                 <h2 id="co-cap-h" class="rv-h2">{{ capTitle }}</h2>

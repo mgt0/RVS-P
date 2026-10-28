@@ -478,7 +478,7 @@ def make_episode(env, episode_id, object_id, label, **extra):
 def make_stills(env, label, object_id):
     directory = env.root / "classification" / label / object_id
     directory.mkdir(parents=True)
-    (directory / "cam1.jpg").write_bytes(b"x")
+    (directory / "cam2.jpg").write_bytes(b"x")
     return directory
 
 

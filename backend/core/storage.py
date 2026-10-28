@@ -4,11 +4,11 @@
 
     lerobot_data/
     ├── episodes/episode_XXXXXX/
-    │     ├── camera_cam1/frame_000000.jpg ...
-    │     ├── camera_cam2/ ... camera_cam5/
+    │     ├── camera_cam2/frame_000000.jpg ...
+    │     ├── camera_cam3/ ... camera_cam5/
     │     ├── joint_states.parquet
     │     └── metadata.json
-    └── classification/{good,defect}/<object_id>/{cam1,cam2,cam3,cam4,cam5}.jpg
+    └── classification/{good,defect}/<object_id>/{cam2,cam3,cam4,cam5}.jpg
 
 패턴: Strategy.
 `DatasetWriter` 인터페이스 뒤에 EpisodeWriter(ACT용 시퀀스)와

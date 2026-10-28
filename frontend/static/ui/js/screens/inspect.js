@@ -81,12 +81,12 @@
       <section class="in-screen" aria-labelledby="in-h">
         <header class="rv-head">
           <h1 id="in-h" tabindex="-1">검사</h1>
-          <p>벨트가 멈추면 5대가 동시에 찍고, 실루엣으로 형상을 만들고, 표면의 어두운 자국·변색을 주황으로 표시합니다. 촬영만 하고 모터는 움직이지 않습니다.</p>
+          <p>벨트가 멈추면 4대가 동시에 찍고, 실루엣으로 형상을 만들고, 표면의 어두운 자국·변색을 주황으로 표시합니다. 촬영만 하고 모터는 움직이지 않습니다.</p>
         </header>
 
         <div class="in-actions" role="group" aria-label="검사 동작">
           <button type="button" class="rv-btn rv-btn--primary" :disabled="capLocked" @click="captureScan"
-                  title="컨베이어가 멈춘 상태에서 카메라 5대로 촬영해 형상을 만듭니다. 모터는 움직이지 않습니다.">
+                  title="컨베이어가 멈춘 상태에서 카메라 4대로 촬영해 형상을 만듭니다. 모터는 움직이지 않습니다.">
             {{ s.capture.busy ? '촬영 중…' : '촬영 → 형상 생성' }}
           </button>
           <span class="in-pick">
@@ -601,7 +601,7 @@
         }
       }
 
-      /* 컨베이어가 멈춘 지금의 5뷰를 찍어 형상을 만든다. 서버가 벨트 정지를 재확인한다.
+      /* 컨베이어가 멈춘 지금의 4뷰를 찍어 형상을 만든다. 서버가 벨트 정지를 재확인한다.
          요청·잠금·토스트는 store.captureNow 가 하고, 결과는 capture.last 를 지켜보는 watch 가 싣는다. */
       async function captureScan() {
         if (s.cycleRunning) return;
@@ -622,7 +622,7 @@
         return run('reconstruct', async () => {
           try {
             // CAD 기준 모델이 있으면 그걸 쓴다. 스캔으로 만든 형상보다 설계 형상이 정확하다 —
-            // 5뷰 visual hull 은 오목부를 복원하지 못한다. 없으면(400) 스캔 재구성으로 넘어간다.
+            // 4뷰 visual hull 은 오목부를 복원하지 못한다. 없으면(400) 스캔 재구성으로 넘어간다.
             let cad = null;
             try {
               cad = await api.get(`/api/scan/model/${objectId}?label=${label}`);
@@ -705,7 +705,7 @@
           try {
             // 데이터 없이도 뷰어·하이라이트를 확인한다. defect 로 요청해 주황 오버레이를 본다.
             const data = await api.post('/api/scan/reconstruct_demo', { label: 'defect', resolution: 48 });
-            applyMesh(data.mesh, { title: '데모 형상 — 합성 5뷰', ref: '' });
+            applyMesh(data.mesh, { title: '데모 형상 — 합성 4뷰', ref: '' });
             s.notify('데모 형상 생성 — 주황 영역이 불량 부위입니다');
           } catch (err) {
             showFail(err, reconstructDemo);

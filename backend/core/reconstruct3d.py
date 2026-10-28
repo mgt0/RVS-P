@@ -1,19 +1,19 @@
-"""5뷰 스캔 → 3D 형상 재구성.
+"""4뷰 스캔 → 3D 형상 재구성.
 
 정직한 한계
 -----------
-cam1~cam5 의 5장(각 90° 간격)만으로 완전한 포토그래메트리
+cam2~cam5 의 4장만으로 완전한 포토그래메트리
 메시를 만드는 건 어렵다. COLMAP 같은 SfM 은 보통 겹침이 큰 수십~수백 장을
 요구하고, 90° 간격은 특징점 매칭이 거의 안 된다.
 
-그래서 5뷰에 실제로 강건한 방식인 '실루엣 기반 Visual Hull(space carving)'을
+그래서 4뷰에 실제로 강건한 방식인 '실루엣 기반 Visual Hull(space carving)'을
 기본으로 쓴다. 원리:
   1. 각 뷰에서 물체 실루엣(전경 마스크)을 뽑는다.
   2. 3D 복셀 격자를 만든다.
-  3. 각 복셀을 5개 카메라 방향으로 투영해, '모든 뷰에서 실루엣 안'인 복셀만 남긴다.
+  3. 각 복셀을 4개 카메라 방향으로 투영해, '모든 뷰에서 실루엣 안'인 복셀만 남긴다.
      → 남은 복셀 덩어리가 물체의 볼록 근사 형상(visual hull)이다.
 
-이 방식은 오목한 부분(구멍 안쪽)은 복원 못 하지만, 5뷰 산업 스캔에서
+이 방식은 오목한 부분(구멍 안쪽)은 복원 못 하지만, 4뷰 산업 스캔에서
 형상 확인·불량 위치 표시 용도로는 충분하고 무엇보다 '항상 동작'한다.
 
 출력은 웹(three.js)이 바로 먹는 형태:
@@ -79,7 +79,7 @@ TINY_SILHOUETTE = 0.005
 # 실루엣 한 장이 반쯤 비면(노출 과다로 흰 큐브가 배경에 묻힘 — 실측 cam2) 그만큼 형상이
 # 잘려 나간다. 나쁜 뷰 하나를 빼는 게 그 뷰를 믿는 것보다 낫다. 최소 MIN_VIEWS 대는 남긴다.
 MIN_VIEWS = 3
-VIEW_MAX_DROP = 2          # 한 번에 빼 보는 최대 뷰 수(5대 → 최소 3대 남김)
+VIEW_MAX_DROP = 2          # 한 번에 빼 보는 최대 뷰 수(MIN_VIEWS 가 하한이라 4대면 1대만 뺀다)
 # 평균이 이만큼 이상 올라야 뷰를 뺀다 — 같으면 뷰가 많은 쪽. 하단 C1 은 멀쩡해도 구조적으로
 # 점수가 낮아(합성 0.64) 빼면 평균이 0.02 쯤 오르는데, 그 C1 이 X·Z 폭을 잡는 유일한 뷰라
 # 빠지면 외접 치수가 60 → 85mm 로 부풀었다(합성 화이트밸런스 교란). 실데이터에서 실제로 나쁜
@@ -147,16 +147,15 @@ SUNSET = np.array([1.0, 0.478, 0.09], dtype=np.float32)
 # (기하는 물리적 사실이라 코드가 아니라 설정이 가져야 한다).
 VIEW_DIRECTIONS: dict[str, tuple[float, float, float]] = {
     # 좌표계: +X 오른쪽, +Y 위, +Z 앞. '물체 → 카메라' 방향이며 크기는 무관(정규화한다).
-    # 실제 리그는 직교 5뷰가 아니라 대각선 4대 + 하단 1대이고, 전부 45° 기준이다.
+    # 실제 리그는 직교 뷰가 아니라 수평 대각선 2대 + 위 대각선 2대(C2~C5)이고, 전부 45° 기준이다.
     #
     # 주의: 고도 45° 를 (1,1,1) 로 쓰면 안 된다. 정규화하면 y = 1/sqrt(3) 이라
     # 고도가 asin(1/sqrt(3)) = 35.3° 로, 의도보다 10° 낮게 들어간다.
     # 방위 a, 고도 e 의 정확한 벡터는 (sin a cos e, sin e, cos a cos e) 다.
-    "cam1": (0.5, 0.7071, 0.5),        # 오른쪽 대각선 위 — 방위 +45°, 고도 +45°
-    "cam2": (-0.5, 0.7071, 0.5),       # 왼쪽 대각선 위   — 방위 -45°, 고도 +45°
-    "cam3": (-0.7071, 0.0, 0.7071),    # 왼쪽 대각선      — 방위 -45°, 고도   0°
+    "cam2": (-0.7071, 0.0, 0.7071),    # 왼쪽 대각선      — 방위 -45°, 고도   0°
+    "cam3": (-0.5, 0.7071, 0.5),       # 왼쪽 대각선 위   — 방위 -45°, 고도 +45°
     "cam4": (0.7071, 0.0, 0.7071),     # 오른쪽 대각선    — 방위 +45°, 고도   0°
-    "cam5": (0.0, -1.0, 0.0),          # 하단 뷰          — 바로 아래에서 위로
+    "cam5": (0.5, 0.7071, 0.5),        # 오른쪽 대각선 위 — 방위 +45°, 고도 +45°
 }
 
 
@@ -404,7 +403,7 @@ def _pick_object_component(mask: np.ndarray, box=None) -> np.ndarray:
 
     가장 큰 덩어리를 고르지 않는다. 스캔 리그가 실험실 한가운데 있으면
     배경(선반·창문·케이블)이 물체보다 훨씬 커서 배경을 물체로 착각하고,
-    그러면 뷰마다 엉뚱한 영역이 잡혀 5뷰 교집합이 비어 형상이 통째로 사라진다
+    그러면 뷰마다 엉뚱한 영역이 잡혀 4뷰 교집합이 비어 형상이 통째로 사라진다
     (실측: 뷰별 실루엣 11~41% 인데 교집합 0복셀).
 
     물체는 리그 중앙에 놓인다는 전제로, 중앙 ROI 와 겹치는 면적이 가장 큰
@@ -465,7 +464,7 @@ def normalize_silhouette(mask: np.ndarray, size: int) -> np.ndarray:
     """실루엣을 자기 바운딩박스 기준으로 정규화한 정사각 마스크로 만든다.
 
     왜 필요한가: space carving 은 복셀을 각 뷰의 이미지 평면에 투영해 교집합을
-    구하는데, 원래 구현은 복셀 격자를 '이미지 전체'에 매핑했다. 그건 5대 카메라가
+    구하는데, 원래 구현은 복셀 격자를 '이미지 전체'에 매핑했다. 그건 4대 카메라가
     물체를 전부 같은 크기·같은 위치로 담고 있을 때만 맞는 가정이다.
 
     실제 리그는 카메라마다 거리와 각도가 달라 물체가 화면의 8%~54% 로 제각각이고
@@ -582,7 +581,7 @@ def _loo_scores(masks: dict, projections: dict, shape, close: int = 0) -> dict[s
 def _select_views(masks: dict, projections: dict, shape, close: int = 0):
     """leave-one-out 평균이 가장 높은 뷰 조합을 고른다. (남길 뷰, 뺀 뷰{이름: 점수}, 뷰별 점수).
 
-    최대 VIEW_MAX_DROP 대까지 빼 본 모든 조합(5대면 16가지)을 잰다. 나쁜 뷰는 깎기에 참여해
+    최대 VIEW_MAX_DROP 대까지 빼 본 모든 조합(4대면 5가지)을 잰다. 나쁜 뷰는 깎기에 참여해
     다른 뷰들의 점수까지 끌어내리므로, 빼면 남은 뷰들의 평균이 오른다. 차이가
     VIEW_SUBSET_MARGIN 보다 작으면 뷰가 많은 쪽을 남긴다.
 
@@ -613,7 +612,7 @@ def _clean_volume(volume: np.ndarray, smooth_sigma: float = MESH_SMOOTH_SIGMA) -
     """복셀 덩어리를 메시로 만들기 전에 다듬는다.
 
     space carving 결과를 그대로 marching cubes 에 넣으면 세 가지가 그대로 보인다:
-      1. 공중에 뜬 파편 — 실루엣 노이즈가 우연히 5뷰에서 겹친 자리
+      1. 공중에 뜬 파편 — 실루엣 노이즈가 우연히 4뷰에서 겹친 자리
       2. 표면의 잔 구멍 — 한 뷰에서만 살짝 어긋나도 복셀이 뚫린다
       3. 계단 모양 — 복셀은 정육면체라 경계가 각진다
 
@@ -1215,9 +1214,9 @@ def reconstruct_from_views(
     rois: dict | None = None,
     rig=None,
 ) -> ReconstructionResult:
-    """5뷰 이미지 → 3D 메시 + 표면 이상(주황) 오버레이.
+    """4뷰 이미지 → 3D 메시 + 표면 이상(주황) 오버레이.
 
-    view_images: {"cam1": BGR np.ndarray, ...}. 최소 3뷰 이상 권장.
+    view_images: {"cam2": BGR np.ndarray, ...}. 최소 3뷰 이상 권장.
     backgrounds: 같은 키의 빈 스캔대 이미지. 있으면 배경 차분으로 실루엣을 뽑는다.
     rois: {뷰: 정규화 [x0, y0, x1, y1]}. 실루엣은 이 안에서만 뽑는다. 없는 뷰는 rig 의
       작업 공간 투영, 그것도 없으면 화면 전체.
@@ -1278,7 +1277,7 @@ def reconstruct_from_views(
         # 한 뷰라도 물체를 놓치면 전부 깎인다. 어느 뷰가 이상한지 같이 알려준다.
         worst = min(coverage, key=coverage.get)
         raise EmptyHullError(
-            "5뷰의 실루엣 교집합이 비어 3D 형상을 만들 수 없습니다. "
+            "4뷰의 실루엣 교집합이 비어 3D 형상을 만들 수 없습니다. "
             "물체가 모든 카메라에 온전히 담기고 배경이 균일해야 합니다. "
             f"뷰별 실루엣 비율: "
             f"{', '.join(f'{k} {v * 100:.0f}%' for k, v in sorted(coverage.items()))}"
@@ -1382,14 +1381,14 @@ def load_backgrounds(root: Path) -> dict[str, np.ndarray]:
 
 
 def load_object_views(root: Path, label: str, object_id: str) -> dict[str, np.ndarray]:
-    """classification/{good,defect}/<object_id>/ 에서 5뷰 이미지를 로드."""
+    """classification/{good,defect}/<object_id>/ 에서 뷰 이미지를 로드."""
     obj_dir = root / "classification" / label / object_id
     if not obj_dir.exists():
         raise FileNotFoundError(f"스캔 이미지를 찾을 수 없습니다: {obj_dir}")
 
     images: dict[str, np.ndarray] = {}
     for name in VIEW_DIRECTIONS:
-        # cam1.jpg 또는 cam1_<episode>.jpg 형태 모두 허용, 가장 최근 것 사용
+        # cam2.jpg 또는 cam2_<episode>.jpg 형태 모두 허용, 가장 최근 것 사용
         candidates = sorted(obj_dir.glob(f"{name}*.jpg"))
         if candidates:
             img = imread(candidates[-1])

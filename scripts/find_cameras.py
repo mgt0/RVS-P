@@ -2,8 +2,8 @@
 """카메라 확인 — 어떤 장치가 config.yaml 의 어느 슬롯이 되는지 눈으로 본다.
 
 `find_ports.py` 가 arm 에 하는 일을 카메라에 한다. 인덱스는 USB 를 다시 꽂으면
-밀리므로 config 는 장치 '이름'으로 지목하는데, 같은 이름이 5대라 어느 것이
-cam1~cam5 중 어느 슬롯인지는 사람이 봐야 정해진다. 그래서 썸네일을 남긴다.
+밀리므로 config 는 장치 '이름'으로 지목하는데, 같은 이름이 4대라 어느 것이
+cam2~cam5 중 어느 슬롯인지는 사람이 봐야 정해진다. 그래서 썸네일을 남긴다.
 
 사용
 ----
@@ -11,7 +11,7 @@ cam1~cam5 중 어느 슬롯인지는 사람이 봐야 정해진다. 그래서 �
     #   → scratch/camera_shots/nth0.jpg ... 를 열어보고
     #     물리 배치와 다르면 config.yaml 의 nth 값만 바꾼다
 
-주의: 한 대씩 순서대로 연다. 5대를 동시에 열면 USB 대역폭이 모자라
+주의: 한 대씩 순서대로 연다. 4대를 동시에 열면 USB 대역폭이 모자라
       뒤쪽 카메라가 실패하는데, 그건 배선 문제지 설정 문제가 아니다.
 """
 
@@ -120,7 +120,7 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     print(f"\n'{args.match}' 매칭 {len(matches)}대 — 한 대씩 프레임을 받아봅니다:")
 
-    slots = ("cam1", "cam2", "cam3", "cam4", "cam5")
+    slots = ("cam2", "cam3", "cam4", "cam5")
     for nth, index in enumerate(matches):
         cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
         if not cap.isOpened():

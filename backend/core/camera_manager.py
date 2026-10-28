@@ -1,9 +1,9 @@
-"""5대 카메라 스레드 캡처 + 타임스탬프 동기화.
+"""4대 카메라 스레드 캡처 + 타임스탬프 동기화.
 
 설계 근거
 ---------
 * 카메라당 전용 스레드: cv2.VideoCapture.read() 는 블로킹이다. 한 루프에서
-  5대를 순차로 읽으면 지연이 누적돼 프레임 간 skew 가 100ms 를 넘긴다.
+  4대를 순차로 읽으면 지연이 누적돼 프레임 간 skew 가 100ms 를 넘긴다.
   read() 는 내부에서 GIL 을 놓기 때문에 파이썬 스레드로도 병렬성이 나온다.
 * latest-frame-wins: 드라이버 버퍼에 쌓인 오래된 프레임은 텔레오퍼레이션에
   독이다. 큐를 쌓지 않고 항상 최신 1장만 유지한다(CAP_PROP_BUFFERSIZE=1 병행).
@@ -433,7 +433,7 @@ class _CameraWorker(threading.Thread):
             #
             # 카메라마다 독립적으로 period 만큼 쉬면 read 시점이 제각각 흩어져
             # 카메라 간 skew 가 한 주기 가까이(측정: 15fps 에서 63ms) 벌어진다.
-            # 절대 격자에 맞춰 깨우면 5대의 read 가 같은 순간에 모여 skew 가 줄어든다.
+            # 절대 격자에 맞춰 깨우면 4대의 read 가 같은 순간에 모여 skew 가 줄어든다.
             # (시뮬레이션 경로의 합성 프레임도 같은 이유로 같은 방식을 쓴다)
             #
             # 격자 기준은 read 이전 시각(cycle_started)이다. read 이후 시각으로 잡으면
@@ -596,7 +596,7 @@ class _CameraWorker(threading.Thread):
 
 
 class CameraManager:
-    """카메라 5대를 하나의 인터페이스로 묶는 Facade."""
+    """카메라 4대를 하나의 인터페이스로 묶는 Facade."""
 
     def __init__(self, cameras: dict[str, CameraConfig], simulate: bool = False) -> None:
         self._workers = {
@@ -658,7 +658,7 @@ class CameraManager:
         return [w.status() for w in self._workers.values()]
 
     def snapshot(self) -> tuple[dict[str, Frame], float]:
-        """5대에서 시간적으로 정렬된 한 세트를 뽑고 skew(ms)를 함께 반환.
+        """4대에서 시간적으로 정렬된 한 세트를 뽑고 skew(ms)를 함께 반환.
 
         2단계로 동작한다:
           1) 각 카메라의 최신 타임스탬프 중 '중앙값'을 공통 기준시각으로 삼는다.

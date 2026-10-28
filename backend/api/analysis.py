@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 from flask import Blueprint, Response, jsonify, request
 
+from ..config import CAMERA_ORDER
 from ..core import inspections
 from ..core.cycle import CycleBusyError
 from ..core.reconstruct3d import (
@@ -73,7 +74,7 @@ def _wait_belts_still(hub, settle: float) -> None:
 
 
 def _scan_frames(hub) -> dict:
-    """재구성용 카메라(view_dir 있는 것)의 현재 프레임. 글로벌 캠(C270)은 제외."""
+    """재구성용 카메라(view_dir 있는 것)의 현재 프레임."""
     frames, _ = hub.cameras.snapshot()
     if not frames:
         raise ValidationError("카메라에서 프레임을 받지 못했습니다. 연결 상태를 확인하세요.")
@@ -314,7 +315,7 @@ def scan_capture():
 
 # ── 리그 캘리브레이션(ArUco 마커 큐브) ──
 # 절차: 마커 큐브를 정지 위치에 '앞(ID 2) 면을 앞으로' 놓고 샷 1장(기준) → 큐브를 조금씩 돌리고
-# 한두 장은 기울여(하단 C1 의 초점거리용) 2~4장 더 → 계산. 첫 샷이 월드 좌표계가 된다.
+# 한두 장은 기울여(초점거리용) 2~4장 더 → 계산. 첫 샷이 월드 좌표계가 된다.
 # 촬영만 한다 — 모터는 움직이지 않는다.
 @bp.get("/scan/calibration")
 def calibration_status():
@@ -379,7 +380,7 @@ def scan_model(object_id: str):
     """양품 기준이 되는 CAD 모델(STL). lerobot_data/models/<object_id>.stl
 
     스캔으로 형상을 '만드는' 것보다 설계 형상을 그대로 쓰는 편이 정확하다.
-    5뷰 visual hull 은 오목부를 복원하지 못하고 절대 치수도 없다.
+    4뷰 visual hull 은 오목부를 복원하지 못하고 절대 치수도 없다.
     """
     hub = current_hub()
     root = hub.cfg.recording.root
@@ -459,7 +460,7 @@ def upload_model(object_id: str):
 
 @bp.post("/scan/reconstruct")
 def scan_reconstruct():
-    """지정한 물체의 5뷰(object_id)나 저장된 검사 촬영(capture_id)으로 3D 메시를 생성해 반환.
+    """지정한 물체의 4뷰(object_id)나 저장된 검사 촬영(capture_id)으로 3D 메시를 생성해 반환.
 
     capture_id(YYYYmmdd_HHMMSS, 같은 초의 촬영은 _02 접미사)가 있으면 object_id 는 무시하고
     inspections/<capture_id>/<cam>.jpg 를 읽어 /api/scan/capture 와 같은 방식으로 다시 만든다 —
@@ -514,7 +515,7 @@ def scan_reconstruct():
 
 @bp.post("/scan/reconstruct_demo")
 def scan_reconstruct_demo():
-    """업로드/스캔 없이 즉시 확인용. 합성 5뷰(구·실루엣)로 재구성.
+    """업로드/스캔 없이 즉시 확인용. 합성 4뷰(구·실루엣)로 재구성.
 
     카메라·물체 없이도 3D 뷰어와 하이라이트가 동작하는지 검증한다.
     """
@@ -522,11 +523,11 @@ def scan_reconstruct_demo():
     label = body.get("label", "defect")
     resolution = min(max(_num(body, "resolution", 48, int), 16), 96)
 
-    # 합성 실루엣: 중앙에 blob 이 있는 흰 배경 이미지 5장
+    # 합성 실루엣: 중앙에 blob 이 있는 흰 배경 이미지(카메라 수만큼)
     size = 256
     views = {}
     rng = np.random.default_rng(7)
-    for name in ("cam1", "cam2", "cam3", "cam4", "cam5"):
+    for name in CAMERA_ORDER:
         img = np.full((size, size, 3), 240, np.uint8)
         cx, cy = size // 2, size // 2
         axes = (70 + rng.integers(-8, 8), 90 + rng.integers(-8, 8))

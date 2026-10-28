@@ -178,7 +178,7 @@ class ActInferenceRunner:
         """observation(팔로워 관절 + 카메라 프레임) → 다음 관절 목표(degree).
 
         frames의 키는 scripts/to_lerobot.py가 변환 시 쓴 것과 동일한 카메라
-        이름(config.yaml의 CAMERA_ORDER, 예: cam1~cam5)이어야 한다 — 학습 때
+        이름(config.yaml의 CAMERA_ORDER, 예: cam2~cam5)이어야 한다 — 학습 때
         본 적 없는 카메라 이름을 주면 정책이 조용히 무시하거나 에러를 낸다.
 
         follower_joints는 팔로워가 실제로 갖고 있는 관절 수(그리퍼 포함 등)만큼

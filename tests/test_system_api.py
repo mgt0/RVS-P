@@ -166,27 +166,27 @@ class TestRigRules:
         assert a["action"]["route"] == "diagnostics"            # 보정 버튼은 진단 화면에 있다
         assert "진단 화면" in " ".join(a["detail"]["steps"]) and a["detail"]["note"]
         (sysenv.root / "rig_calibration.json").write_text(
-            json.dumps({"cameras": {"cam1": {"rms": 0.5}}}), encoding="utf-8")
+            json.dumps({"cameras": {"cam2": {"rms": 0.5}}}), encoding="utf-8")
         assert "calib_missing" not in alerts(sysenv)
 
     def test_배경이_신선하면_배경_알림이_없다(self, sysenv):
-        make_background(sysenv.root, cam1=0, cam2=6)
+        make_background(sysenv.root, cam2=0, cam3=6)
         assert not {"background_missing", "background_stale"} & set(alerts(sysenv))
 
     def test_7일을_넘기면_background_stale(self, sysenv):
-        make_background(sysenv.root, cam1=8)
+        make_background(sysenv.root, cam2=8)
         found = alerts(sysenv)
         assert "background_missing" not in found
         a = found["background_stale"]
         assert a["severity"] == "info" and a["action"]["route"] == "inspect"
-        assert a["detail"]["evidence"]["age_days"] == 8 and a["detail"]["evidence"]["camera"] == "cam1"
+        assert a["detail"]["evidence"]["age_days"] == 8 and a["detail"]["evidence"]["camera"] == "cam2"
         assert "8일" in a["title"]
 
     def test_가장_오래된_배경이_기준이다(self, sysenv):
         # 한 카메라만 옛 배경이면 그 카메라의 실루엣이 오염된다
-        make_background(sysenv.root, cam1=0, cam2=9, cam3=1)
+        make_background(sysenv.root, cam2=0, cam3=9, cam4=1)
         a = alerts(sysenv)["background_stale"]
-        assert a["detail"]["evidence"]["camera"] == "cam2" and a["detail"]["evidence"]["age_days"] == 9
+        assert a["detail"]["evidence"]["camera"] == "cam3" and a["detail"]["evidence"]["age_days"] == 9
 
 
 # ------------------------------------------------------------------ 규칙: 장치·실행
@@ -247,7 +247,7 @@ class TestSinceAndCache:
         time.sleep(0.02)
         assert alerts(sysenv)["background_missing"]["since"] == first
 
-        make_background(sysenv.root, cam1=0)                       # 해소
+        make_background(sysenv.root, cam2=0)                       # 해소
         assert "background_missing" not in alerts(sysenv)
         time.sleep(0.02)
         shutil.rmtree(sysenv.root / "background")                  # 다시 발생
@@ -264,7 +264,7 @@ class TestSinceAndCache:
     def test_알림은_5초_캐시이고_refresh_로_즉시_갱신된다(self, sysenv):
         first = sysenv.c.get("/api/alerts?refresh=1").get_json()
         assert "background_missing" in {a["id"] for a in first["alerts"]}
-        make_background(sysenv.root, cam1=0)
+        make_background(sysenv.root, cam2=0)
         cached = sysenv.c.get("/api/alerts").get_json()
         assert cached["generated_at"] == first["generated_at"]      # 같은 계산 결과
         assert "background_missing" in {a["id"] for a in cached["alerts"]}
@@ -356,11 +356,11 @@ class TestStatusAndRuns:
 
     def test_카메라가_2대_미만이면_None_이고_소수_한_자리로_반올림한다(self, sysenv, monkeypatch):
         frame = SimpleNamespace()
-        monkeypatch.setattr(sysenv.hub.cameras, "snapshot", lambda: ({"cam1": frame}, 5.0))
+        monkeypatch.setattr(sysenv.hub.cameras, "snapshot", lambda: ({"cam2": frame}, 5.0))
         assert sysenv.c.get("/api/status").get_json()["sync_skew_ms"] is None
         monkeypatch.setattr(sysenv.hub.cameras, "snapshot", lambda: ({}, 0.0))
         assert sysenv.c.get("/api/status").get_json()["sync_skew_ms"] is None
-        monkeypatch.setattr(sysenv.hub.cameras, "snapshot", lambda: ({"cam1": frame, "cam2": frame}, 12.345))
+        monkeypatch.setattr(sysenv.hub.cameras, "snapshot", lambda: ({"cam2": frame, "cam3": frame}, 12.345))
         assert sysenv.c.get("/api/status").get_json()["sync_skew_ms"] == 12.3
 
     def test_기존_status_키는_그대로(self, sysenv):

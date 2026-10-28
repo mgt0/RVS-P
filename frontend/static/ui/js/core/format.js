@@ -12,7 +12,7 @@
    clock(ms)         epoch 밀리초 → 로컬 '15:03:21'
    dateTime(v)       epoch 초·밀리초 또는 ISO 문자열 → '10/28 13:52' (두 번째 인자 {seconds:true} 면 초까지)
    ago(v)            '방금 전' / '3분 전' / '2시간 전' / '16일 전'
-   camName(x)        카메라 라벨의 ' 캠' 을 뗀다: 'C1 하단 캠' → 'C1 하단'. x 는 문자열 또는 { label, name }
+   camName(x)        카메라 라벨의 ' 캠' 을 뗀다: 'C2 하단 대각 캠 1' → 'C2 하단 대각 1'. x 는 문자열 또는 { label, name }
    jointName(i)      0 부터 센 관절 번호 → '관절 1' … '관절 5', 6번째는 '관절 6 · 그리퍼'. 관절을 이름으로 보이는 화면은 모두 이걸 쓴다
    FPS_LOW_RATIO     0.7. 실측 fps 가 목표의 이 비율 미만이면 '프레임 낮음'(개요·장비 제어·진단 공통, 지시계의 정상 음영 하한도 같은 값)
    scanNotes(stats)  /api/scan/* 의 mesh.stats → 사람이 읽는 한 줄
@@ -85,7 +85,7 @@
     return `${Math.floor(sec / 86400)}일 전`;
   }
 
-  // config.yaml 의 label 은 'C1 하단 캠'. 화면에서는 ' 캠' 을 뗀 'C1 하단' 으로 쓴다(config 는 건드리지 않는다).
+  // config.yaml 의 label 은 'C2 하단 대각 캠 1'. 화면에서는 ' 캠' 을 뗀 'C2 하단 대각 1' 으로 쓴다(config 는 건드리지 않는다).
   function camName(x) {
     const raw = typeof x === 'string' ? x : (x && (x.label || x.name)) || '';
     return String(raw).replace(/ 캠/g, '');

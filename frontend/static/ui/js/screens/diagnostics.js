@@ -443,7 +443,7 @@
         };
       }));
 
-      // 슬롯 이름(cam1) → 화면 이름(C1 하단). 진단에 없으면 슬롯 그대로
+      // 슬롯 이름(cam2) → 화면 이름(C2 하단 대각). 진단에 없으면 슬롯 그대로
       function camLabel(slot) {
         const c = (cfg.cameras || []).find((x) => x.slot === slot);
         return c ? fmt.camName(c.label || c.slot) : slot;

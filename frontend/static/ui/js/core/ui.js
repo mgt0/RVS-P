@@ -13,7 +13,7 @@
 
    ■ rv-gauge — 아날로그 지시계(트랙 8px, 음영 = 정상 범위, 바늘 3×16). 범위를 벗어나면 바늘이
      --warn 으로 바뀌고 ▲ + '범위 이탈' 글자가 붙는다. 루트가 role="img" 이고 aria-label 이 자동으로
-     만들어진다("C1 하단 14.9 fps, 정상 범위 13.5에서 15"). 한 줄 = [label][트랙][값] 그리드.
+     만들어진다("C2 하단 대각 1 14.9 fps, 정상 범위 13.5에서 15"). 한 줄 = [label][트랙][값] 그리드.
      props  value     숫자. null/undefined 면 바늘 없이 '—'
             min, max  트랙의 양 끝(기본 0, 100). normal 이 없으면 이 밖이 '이탈'
             normal    [lo, hi] 정상 범위 음영. 있으면 이 밖이 '이탈'. lo 나 hi 가 null 이면 그쪽이 열린 끝(예: [0, null] = 0 이상이면 정상)
@@ -66,7 +66,7 @@
      예  <rv-dialog v-model="open" title="에피소드 편집"> … <template #footer><button class="rv-btn rv-btn--primary">저장</button></template></rv-dialog>
 
    ■ rv-cam-frame — 카메라 프레임: MJPEG + ROI 오버레이 + 신호 없음. 4:3.
-     props  slot       카메라 슬롯 이름('cam1' …) — 스트림은 store.streamUrl(slot) 의 stream_port 로 붙는다
+     props  slot       카메라 슬롯 이름('cam2' …) — 스트림은 store.streamUrl(slot) 의 stream_port 로 붙는다
             roi        [x0,y0,x1,y1] 0~1(플립 적용 후, config roi). 있으면 점선 사각형을 그린다
             live       false 면 스트림을 끊는다(src 제거 → 연결 해제). 화면이 비활성(keep-alive)이면 자동으로 끊고 재진입 시 다시 붙는다
             connected  false 면 스트림을 열지 않고 '신호 없음'. 이미지 로드가 실패해도 '신호 없음'이고 5초마다 다시 붙는다

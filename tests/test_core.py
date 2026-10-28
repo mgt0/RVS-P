@@ -201,7 +201,7 @@ class TestTruncatedFrame:
     def _worker(self):
         from backend.config import CameraConfig
         from backend.core.camera_manager import _CameraWorker
-        return _CameraWorker(CameraConfig(name="cam1", device=0))
+        return _CameraWorker(CameraConfig(name="cam2", device=0))
 
     def test_아래쪽이_단색이면_잘린_프레임(self):
         import numpy as np
