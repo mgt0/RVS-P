@@ -95,6 +95,9 @@ class EpochRecord:
     val_mae_per_joint: list[float] = field(default_factory=list)
     lr: float | None = None
     seconds: float | None = None
+    # lerobot 지표 줄의 나머지 미터(smpl, grdn, data_s, updt_s, smp/s, mem_gb, l1_loss, kld_loss …).
+    # 버전마다 있는 키가 달라서 '있는 것만' 담는다 — 없는 키를 가정하는 쪽(프론트)이 숨김 처리한다.
+    meters: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -121,6 +124,18 @@ class MetricHistory:
                 if self._best_val_loss is None or record.val_loss < self._best_val_loss:
                     self._best_val_loss = record.val_loss
                     self._best_epoch = record.epoch
+
+    def set_val_loss(self, record: EpochRecord, val_loss: float) -> None:
+        """이미 append 한 기록에 평가 손실을 뒤늦게 붙인다.
+
+        실제 학습 로그는 평가 줄이 같은 스텝의 지표 줄 '다음에' 오므로, 지표 줄을 먼저
+        넣어야 차트가 지연되지 않는다. best 는 append 때만 갱신되므로 여기서도 맞춘다.
+        """
+        with self._lock:
+            record.val_loss = val_loss
+            if self._best_val_loss is None or val_loss < self._best_val_loss:
+                self._best_val_loss = val_loss
+                self._best_epoch = record.epoch
 
     def snapshot(self) -> dict:
         with self._lock:

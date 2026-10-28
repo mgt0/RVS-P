@@ -9,8 +9,9 @@
     # 데모 (GPU·데이터셋 불필요 — 파이프라인 확인용)
     python scripts/train.py --epochs 50 --demo
 
-    # 실기 (lerobot 설치 필요, act_trainer.LeRobotTrainer 구현 후)
-    python scripts/train.py --epochs 100 --lerobot
+    # 실기: scripts/train_act.py 로 돌린 가장 최근 학습의 로그를 따라 읽어 출력한다
+    # (학습 자체는 하지 않는다. --epochs 는 DEMO 전용이라 무시된다)
+    python scripts/train.py --lerobot
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ def main() -> None:
     }
 
     demo = not args.lerobot
-    print(f"학습 시작 — {'DEMO' if demo else 'LEROBOT'} 모드, {args.epochs} epochs")
+    print(f"학습 시작 — DEMO 모드, {args.epochs} epochs" if demo else "학습 시작 — LEROBOT 모드")
     print(f"{'EPOCH':>6} {'TRAIN_LOSS':>12} {'VAL_LOSS':>10} {'VAL_MAE°':>10} {'SUCCESS@τ':>11}")
     print("-" * 54)
 
