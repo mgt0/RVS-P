@@ -13,10 +13,14 @@ gunicorn+gevent 구성을 사용하세요.
 # 프로세스 시작 시점에 아무것도 안 하고 먼저 import만 해두면 슬롯을 선점해 이후
 # cv2/pandas/lerobot 전부 정상 동작한다. torch 미설치 환경(=rollout 안 쓰는 경우)
 # 에서는 조용히 넘어간다.
+_torch_error = None
 try:
     import torch  # noqa: F401
-except ImportError:
-    pass
+except (ImportError, OSError) as _exc:
+    # OSError: Windows 스마트 앱 컨트롤 같은 정책이 torch DLL 자체를 막는 경우
+    # (WinError 4551, 2026-10-28 실측). 선점은 순서 보정일 뿐이라 서버는 torch 없이도 떠야 한다.
+    # 예외는 버리지 않고 남겨 둔다 — 알림·진단 화면이 '왜 CNN/rollout 이 안 되는지'를 보여줄 근거다.
+    _torch_error = _exc
 
 import atexit
 import socket
@@ -26,6 +30,9 @@ from pathlib import Path
 
 from backend.app import create_app, enable_file_logging
 from backend.config import load_config
+from backend.core import system_check   # import 가 가벼워 선점 순서와 무관하다
+
+system_check.record_torch_import(_torch_error)
 
 _LOCK_PATH = Path(tempfile.gettempdir()) / "omx-scan-dashboard.lock"
 _lock_handle = None
