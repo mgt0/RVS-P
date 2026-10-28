@@ -267,6 +267,20 @@ class TestTrainingApi:
         assert r.status_code == 200
         assert r.get_json()["mesh"]["stats"]["num_defect_regions"] == 1
 
+    def test_촬영_형상_생성(self, client):
+        r = client.post("/api/scan/capture", json={"settle_sec": 0, "resolution": 32})
+        assert r.status_code == 200
+        d = r.get_json()
+        assert "mesh" in d and len(d["cameras"]) >= 2
+
+    def test_벨트가_돌면_촬영_거부(self, client):
+        client.post("/api/conveyor/start")
+        try:
+            r = client.post("/api/scan/capture", json={"settle_sec": 0})
+            assert r.status_code == 400
+        finally:
+            client.post("/api/conveyor/stop")
+
 
 # --------------------------------------------------------------- 실루엣 추출
 class TestSilhouette:
@@ -716,6 +730,33 @@ class TestDeviationDetection:
         # 옅게라도 뜰 수는 있으나 심각도가 낮아야 한다.
         assert stats["max_severity"] < 0.5
 
+    def test_view_dir_이_빠진_카메라도_재구성과_같은_기본_방향으로_비교한다(self, monkeypatch):
+        """config 에 view_dir 가 없는 카메라는 +Z 가 아니라 기본 배치(VIEW_DIRECTIONS) 방향을 쓴다.
+        3곳(정합·윤곽 비교·표면 이상)이 +Z 를 쓰면 그 카메라의 색이 엉뚱한 면에 칠해진다."""
+        from skimage import measure
+
+        from backend.core import cad
+        R = 40
+        design, actual = self._shapes(R)
+        sils = {n: self._render(actual, d) for n, d in self.DIRS.items()}
+        partial = {n: d for n, d in self.DIRS.items() if n != "cam5"}     # cam5(하단)의 view_dir 가 빠졌다
+        verts, faces, _, _ = measure.marching_cubes(design.astype(np.float32), level=0.5)
+        verts = verts / (R - 1) * 2 - 1
+
+        rot, score = cad.align_to_scan(design, sils, self.DIRS, steps=3)
+        rot2, score2 = cad.align_to_scan(design, sils, partial, steps=3)
+        assert score2 == score and np.array_equal(rot2, rot)
+        assert cad.deviation_colors(verts, faces, design, sils, partial, rot)[1] == \
+            cad.deviation_colors(verts, faces, design, sils, self.DIRS, rot)[1]
+
+        seen = []
+        monkeypatch.setattr(cad, "surface_anomaly", lambda normals, samples, faces=None: (
+            seen.append(samples["cam5"][2]), (np.zeros(len(normals), np.float32), {}))[1])
+        views = {n: np.full((160, 160, 3), 200, np.uint8) for n in self.DIRS}
+        for directions in (partial, self.DIRS):
+            cad.cad_surface_anomaly(verts, faces, design, views, sils, directions, rot)
+        assert np.array_equal(seen[0], seen[1])                           # 시선 내적(facing)이 같다
+
     def test_정합이_나쁘면_색칠하지_않는다(self):
         """정상품이 통째로 주황색이 되는 사고를 막는 가드.
 
@@ -808,3 +849,15 @@ class TestEmergencyStop:
         # 설정된 벨트 전부에 대해 결과가 보고돼야 한다(부분 실패도 항목으로 남는다)
         assert set(d["conveyors"]) == {"feed", "work", "lm"}
         assert d["recording"] in ("idle", "aborted")
+
+    def test_드라이버_켜기는_연결된_벨트만_대상으로_한다(self, client, monkeypatch):
+        """끊겼거나 release 한 벨트에 ENABLE 을 보내면 포트를 다시 연다(펌웨어 업로드 중이면 방해가 된다)."""
+        from backend.core.conveyor import ConveyorController
+        hub = client.application.extensions["omx_hub"]
+        target, sent = hub.conveyors["lm"], []
+        real = target.set_enabled
+        monkeypatch.setattr(target, "set_enabled", lambda on: (sent.append(on), real(on))[1])
+        monkeypatch.setattr(ConveyorController, "connected", property(lambda self: self is not target))
+        d = client.post("/api/emergency_reset").get_json()
+        assert d["conveyors"]["lm"] == "not_connected" and sent == []      # 포트를 열지 않았다
+        assert d["conveyors"]["feed"] == "enabled" and d["conveyors"]["work"] == "enabled"

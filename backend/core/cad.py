@@ -1,4 +1,4 @@
-"""CAD 기준 모델 로딩 (STL).
+"""CAD 기준 모델 로딩 (STL, STEP/STP).
 
 왜 CAD 를 쓰는가
 ---------------
@@ -7,23 +7,35 @@
 양품의 설계 형상을 이미 알고 있다면 그걸 기준으로 쓰는 편이 모든 면에서 낫다.
 스캔은 '형상을 만드는' 데가 아니라 '설계와 다른 곳을 찾는' 데 쓴다.
 
-STL 만 직접 지원하는 이유
-------------------------
+STL 과 STEP
+-----------
 STL 은 삼각형 목록이라 의존성 없이 40줄로 읽는다. STEP/STP 는 B-rep 이라
-곡면을 삼각형으로 쪼개는 커널(OpenCASCADE)이 필요한데, 수백 MB 짜리 의존성을
-붙이느니 CAD 툴에서 STL 로 내보내는 편이 싸다(어느 툴이든 클릭 한 번이다).
+곡면을 삼각형으로 쪼개는 커널(OpenCASCADE)이 필요해 gmsh 휠(OCC 내장)로
+삼각형화한다. 업로드된 STEP 은 STL 로 변환해 저장한다.
 """
 
 from __future__ import annotations
 
+import functools
 import logging
 import struct
+import threading
 from pathlib import Path
 
 import numpy as np
 
 # reconstruct3d 는 cad 를 임포트하지 않으므로 순환 참조가 없다.
-from .reconstruct3d import normalize_silhouette, view_basis
+from .reconstruct3d import (
+    TEXTURE_RES,
+    _map_texture,
+    _sample_bilinear,
+    _view_direction,
+    _view_texture,
+    anomaly_map,
+    normalize_silhouette,
+    surface_anomaly,
+    view_basis,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +55,9 @@ DEVIATION_MIN_WIDTH = 0.08
 # 합성 실측: 같은 형상끼리 0.86, 결손품 0.84. 실제 촬영은 실루엣 잡음 때문에
 # 더 낮게 나오므로 여유를 뒀다. 정상품이 통째로 칠해지면 이 값을 올릴 것.
 MIN_ALIGNMENT_SCORE = 0.55
+
+# voxelize 가 껍질 샘플점을 한 번에 메모리에 두는 최대 개수(점당 100바이트쯤이라 50MB 안팎).
+SHELL_CHUNK_POINTS = 500_000
 
 
 def load_stl(path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -101,6 +116,79 @@ def _parse_ascii(raw: bytes) -> np.ndarray:
     return arr.reshape(-1, 3, 3)
 
 
+STEP_SUFFIXES = (".stp", ".step")
+
+# gmsh 는 프로세스 전역 상태라 동시에 두 번 돌리면 모델이 섞인다.
+_gmsh_lock = threading.Lock()
+
+
+def is_step(raw: bytes) -> bool:
+    """STEP(AP203/214/242) 파일은 모두 이 헤더로 시작한다."""
+    return raw.lstrip()[:12] == b"ISO-10303-21"
+
+
+def parse_step(raw: bytes) -> tuple[np.ndarray, np.ndarray]:
+    """STEP 바이트 → (vertices, faces). gmsh(OpenCASCADE 내장)로 표면을 삼각형화한다.
+
+    처음엔 cascadio 를 썼는데 이 PC 의 Windows 앱 제어 정책이 그 DLL 을 막았다.
+    gmsh 휠은 로드된다.
+    """
+    import tempfile
+
+    import gmsh
+
+    with _gmsh_lock, tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "model.step"
+        path.write_bytes(raw)
+        # interruptible=False: Flask 워커 스레드에서는 시그널 핸들러를 못 단다.
+        gmsh.initialize(interruptible=False)
+        try:
+            gmsh.option.setNumber("General.Terminal", 0)
+            gmsh.option.setString("Geometry.OCCTargetUnit", "MM")
+            gmsh.model.occ.importShapes(str(path))
+            gmsh.model.occ.synchronize()
+
+            x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(-1, -1)
+            diag = float(np.linalg.norm([x1 - x0, y1 - y0, z1 - z0])) or 1.0
+            # 뷰어·복셀 비교용이라 정밀할 필요 없다. 곡면은 곡률로 촘촘히, 평면은 성기게.
+            gmsh.option.setNumber("Mesh.MeshSizeMax", diag / 40)
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 12)
+            try:
+                gmsh.model.mesh.generate(2)
+            except Exception as exc:
+                # 곡면 하나가 실패해도 gmsh 는 나머지를 이미 메시해 둔 채 예외를 낸다.
+                # 실측(30MB 조립품): 'Identical points in triangulation' 로 전체가 버려졌다.
+                # 일부 면이 빠진 메시라도 기준 모델로는 쓸 만하므로 살린다.
+                logger.warning("STEP 일부 곡면 메시 실패, 나머지로 진행: %s", exc)
+
+            tags, coords, _ = gmsh.model.mesh.getNodes()
+            _, node_tags = gmsh.model.mesh.getElementsByType(2)   # 2 = 3절점 삼각형
+        except Exception as exc:
+            raise ValueError(f"STEP 변환 실패: {exc}") from exc
+        finally:
+            gmsh.finalize()
+
+    if not len(node_tags):
+        raise ValueError("STEP 에서 면을 하나도 만들지 못했습니다. 솔리드/곡면이 있는지 확인하세요.")
+    index = np.zeros(int(tags.max()) + 1, np.int64)
+    index[tags.astype(np.int64)] = np.arange(len(tags))
+    verts = coords.reshape(-1, 3)
+    faces = index[np.asarray(node_tags, np.int64)].reshape(-1, 3)
+    return verts.astype(np.float32), faces.astype(np.int32)
+
+
+def to_binary_stl(verts: np.ndarray, faces: np.ndarray) -> bytes:
+    """(vertices, faces) → 바이너리 STL. 법선은 0 으로 둔다(읽을 때 다시 계산한다)."""
+    rec = np.zeros(len(faces), dtype=[("n", "<f4", 3), ("v", "<f4", (3, 3)), ("a", "<u2")])
+    rec["v"] = verts[faces]
+    return b"\0" * 80 + struct.pack("<I", len(faces)) + rec.tobytes()
+
+
+def load_mesh(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    raw = path.read_bytes()
+    return parse_step(raw) if is_step(raw) else parse_stl(raw)
+
+
 def normalize(verts: np.ndarray) -> tuple[np.ndarray, dict]:
     """뷰어용으로 중심 정렬 + 단위 크기 정규화. 원본 치수는 stats 로 돌려준다.
 
@@ -122,7 +210,13 @@ def save_model(root: Path, object_id: str, raw: bytes) -> dict:
     저장 전에 파싱한다. 신뢰 경계이므로 '확장자가 .stl 이니 STL 이겠지' 로
     넘기지 않는다 — 깨진 파일을 받아두면 나중에 조회할 때마다 터진다.
     """
-    verts, faces = parse_stl(raw)          # 여기서 실패하면 저장하지 않는다
+    # 여기서 실패하면 저장하지 않는다. STEP 은 변환한 STL 로 저장해
+    # 조회할 때마다 다시 삼각형화하지 않게 한다.
+    if is_step(raw):
+        verts, faces = parse_step(raw)
+        raw = to_binary_stl(verts, faces)
+    else:
+        verts, faces = parse_stl(raw)
 
     models = root / "models"
     models.mkdir(parents=True, exist_ok=True)
@@ -148,33 +242,52 @@ def voxelize(verts: np.ndarray, faces: np.ndarray, res: int) -> np.ndarray:
     from scipy import ndimage
 
     tri = verts[faces]                                   # (F, 3, 3)
-    # 삼각형마다 무게중심 좌표로 표면점을 뿌린다. 가장 긴 변 기준으로 촘촘하게.
-    edge = np.linalg.norm(tri[:, 1] - tri[:, 0], axis=1)
-    edge = np.maximum(edge, np.linalg.norm(tri[:, 2] - tri[:, 0], axis=1))
-    n_samples = int(np.clip(edge.max() * res * 2, 4, 64))
-
-    u = np.random.default_rng(0).random((n_samples, 2))
-    u = u[u.sum(axis=1) <= 1.0]                          # 삼각형 내부만
-    w = np.stack([1 - u[:, 0] - u[:, 1], u[:, 0], u[:, 1]], axis=1)   # (S, 3)
-    pts = np.einsum("sk,fkd->fsd", w, tri).reshape(-1, 3)
-
-    idx = np.clip(((pts + 1.0) / 2.0 * (res - 1)).astype(np.int32), 0, res - 1)
+    # 삼각형마다 무게중심 격자로 표면점을 뿌린다. 간격은 '그 삼각형의' 가장 긴 변 기준으로
+    # 반 복셀 이하 — 큰 삼각형도 껍질에 틈이 안 생기게. 예전에는 모든 삼각형에 같은 개수
+    # (최대 64개, 무작위)를 뿌려서, 면이 큰 삼각형 몇 개뿐인 거친 STL 은 껍질에 틈이 났다.
+    edge = np.max(np.stack([
+        np.linalg.norm(tri[:, 1] - tri[:, 0], axis=1),
+        np.linalg.norm(tri[:, 2] - tri[:, 1], axis=1),
+        np.linalg.norm(tri[:, 0] - tri[:, 2], axis=1),
+    ]), axis=0)
+    half_voxel = 1.0 / (res - 1)                         # [-1,1] 에서 복셀 한 칸 = 2/(res-1)
+    steps = np.clip(np.ceil(edge / half_voxel).astype(np.int64), 1, 4 * res)
     shell = np.zeros((res, res, res), bool)
-    shell[idx[:, 0], idx[:, 1], idx[:, 2]] = True
+    for k in np.unique(steps):
+        i, j = np.meshgrid(np.arange(k + 1), np.arange(k + 1), indexing="ij")
+        inside = (i + j) <= k
+        a, b = i[inside] / k, j[inside] / k
+        w = np.stack([1 - a - b, a, b], axis=1)          # (S, 3)
+        group = tri[steps == k]
+        # 삼각형마다 S=(k+1)(k+2)/2 점이라, 가늘고 긴 삼각형이 많은 STL 은 점을 다 모으면 수억 개(수 GB)가 된다.
+        # 삼각형 수를 줄이면 큰 삼각형의 껍질에 틈이 나므로(위 설명) 점은 그대로 두고, 덩어리마다 복셀에 찍고 버린다.
+        # ponytail: 점 수(시간)는 그대로 k² 에 비례한다 — 문제가 되면 긴 변 방향으로 성긴 격자를 쓸 것.
+        per = max(1, SHELL_CHUNK_POINTS // len(w))
+        for s in range(0, len(group), per):
+            pts = np.einsum("sk,fkd->fsd", w, group[s:s + per]).reshape(-1, 3)
+            idx = np.clip(((pts + 1.0) / 2.0 * (res - 1)).astype(np.int32), 0, res - 1)
+            shell[idx[:, 0], idx[:, 1], idx[:, 2]] = True
 
     # 껍질에 구멍이 있으면 fill 이 새어나간다. 한 번 닫고 채운다.
-    shell = ndimage.binary_closing(shell, iterations=1)
-    return ndimage.binary_fill_holes(shell)
+    #
+    # 한 칸씩 0 으로 둘러싸고 한다. normalize() 가 모델을 ±1 에 꽉 맞추므로 껍질이 항상
+    # 격자 끝에 닿는데, binary_closing 의 침식은 배열 밖을 0 으로 보아 그 끝 면을 깎는다.
+    # 그러면 껍질이 열려 fill 이 새고 '면 몇 조각'만 남는다 — 실측(2026-10-28, 50mm 큐브
+    # STL): 복셀 점유 0.005, 그림자 채움 0.13 이라 실루엣이 멀쩡해도 정합 일치도가
+    # 0.12~0.14 에 묶여 CAD 비교가 매번 건너뛰어졌다.
+    shell = ndimage.binary_closing(np.pad(shell, 1), iterations=1)
+    return ndimage.binary_fill_holes(shell)[1:-1, 1:-1, 1:-1]
 
 
 def find_model(root: Path, object_id: str) -> Path | None:
-    """models/<object_id>.stl 을 찾는다. 대소문자와 확장자 표기를 가리지 않는다."""
+    """models/<object_id>.stl(없으면 .stp/.step)을 찾는다. 대소문자를 가리지 않는다."""
     models = root / "models"
     if not models.exists():
         return None
-    for path in models.iterdir():
-        if path.stem.lower() == object_id.lower() and path.suffix.lower() == ".stl":
-            return path
+    found = {p.suffix.lower(): p for p in models.iterdir() if p.stem.lower() == object_id.lower()}
+    for suffix in (".stl", *STEP_SUFFIXES):
+        if suffix in found:
+            return found[suffix]
     return None
 
 
@@ -246,7 +359,7 @@ def align_to_scan(
     def score(rot: np.ndarray) -> float:
         total = []
         for name, mask in masks.items():
-            d = rot.T @ np.asarray(directions.get(name, (0.0, 0.0, 1.0)), float)
+            d = rot.T @ np.asarray(_view_direction(directions, name), float)
             px, py, _ = _project_fitted(points, d, res)
             shadow = np.zeros((res, res), bool)
             shadow[py, px] = True
@@ -295,8 +408,11 @@ def deviation_colors(
     silhouettes: dict[str, np.ndarray],
     directions: dict[str, tuple[float, float, float]],
     rotation: np.ndarray,
+    extra: np.ndarray | None = None,
 ) -> tuple[list[list[float]], dict]:
     """설계와 다른 곳을 정점 색으로 표시한다.
+
+    extra: 정점별 0~1 점수(표면 이상 등). 윤곽 결손 점수와 큰 쪽을 색 농도로 쓴다.
 
     3D 재구성을 거치지 않는다. CAD 를 각 카메라로 렌더링해 실제 실루엣과
     2D 에서 비교하고, 어긋난 픽셀에 투영되는 CAD 정점만 칠한다.
@@ -318,7 +434,7 @@ def deviation_colors(
 
     for name, raw in silhouettes.items():
         mask = normalize_silhouette(raw, res) > 0
-        d = rotation.T @ np.asarray(directions.get(name, (0.0, 0.0, 1.0)), float)
+        d = rotation.T @ np.asarray(_view_direction(directions, name), float)
         d = d / (np.linalg.norm(d) or 1.0)
 
         # 복셀로 변환을 정하고, 정점에 '같은' 변환을 적용한다.
@@ -368,6 +484,9 @@ def deviation_colors(
         # 평균을 내면 그 부위를 못 보는 카메라(뒤쪽) 때문에 희석된다.
         np.maximum(score, np.where(visible, hit, 0.0), out=score)
 
+    if extra is not None:
+        np.maximum(score, extra.astype(np.float32), out=score)
+
     # 정도에 비례해 중립색 → 경고색으로 섞는다. 살짝 어긋난 곳은 옅게,
     # 크게 떨어져 나간 곳은 진하게 나와 심각도가 한눈에 보인다.
     colors = neutral + score[:, None] * (alert - neutral)
@@ -382,17 +501,69 @@ def deviation_colors(
     )
 
 
+def cad_surface_anomaly(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    volume: np.ndarray,
+    views: dict[str, np.ndarray],
+    silhouettes: dict[str, np.ndarray],
+    directions: dict[str, tuple[float, float, float]],
+    rotation: np.ndarray,
+) -> tuple[np.ndarray, dict]:
+    """CAD 정점마다 표면 이상(균열·변색) 점수. (점수, 요약).
+
+    윤곽 비교(deviation_colors)는 금이 가거나 색이 변한 결함을 원리적으로 못 본다 — 윤곽이
+    그대로이기 때문이다. 정합한 자세로 각 뷰의 실제 촬영 색을 CAD 정점에 뽑아, 스캔 재구성과
+    같은 판정(reconstruct3d.surface_anomaly)에 넘긴다. 투영은 deviation_colors 와 같은
+    'fitted' 정사영이라 윤곽 비교와 같은 픽셀 격자 위에 놓인다.
+    """
+    res = volume.shape[0]
+    points = _voxel_points(volume)
+    normals = vertex_normals(verts, faces)
+    samples = {}
+    for name, img in views.items():
+        sil = silhouettes.get(name)
+        if sil is None:
+            continue
+        tex, tex_mask = _view_texture(img, sil, TEXTURE_RES)
+        if tex is None:
+            continue
+        d = rotation.T @ np.asarray(_view_direction(directions, name), float)
+        d = d / (np.linalg.norm(d) or 1.0)
+        _, _, fit = _project_fitted(points, d, res)
+        cu, cv, half = fit
+        right, up = view_basis(d)
+        fx = ((verts @ right - cu) / half * 0.5 + 0.5) * (TEXTURE_RES - 1)
+        fy = (0.5 - (verts @ up - cv) / half * 0.5) * (TEXTURE_RES - 1)
+        fx, fy = fx.astype(np.float32), fy.astype(np.float32)
+        sample, inside = _sample_bilinear(tex, tex_mask, fx, fy)
+        anom, _ = _sample_bilinear(_map_texture(anomaly_map(img, sil), sil, TEXTURE_RES), tex_mask, fx, fy)
+
+        # 가림 판정은 deviation_colors 와 같은 z-버퍼(복셀 격자 해상도).
+        facing = (normals @ d).astype(np.float32)
+        vx, vy, _ = _project_fitted(verts, d, res, fit=fit)
+        depth = verts @ d
+        front = facing > 0
+        zbuf = np.full((res, res), -np.inf)
+        np.maximum.at(zbuf, (vy[front], vx[front]), depth[front])
+        visible = front & (depth >= zbuf[vy, vx] - DEPTH_TOLERANCE)
+        samples[name] = (sample, visible & inside, facing, anom[:, 0])
+    return surface_anomaly(normals, samples, faces)
+
+
 def compare_with_scan(
     mesh: dict,
     silhouettes: dict[str, np.ndarray],
     directions: dict[str, tuple[float, float, float]],
     *,
     resolution: int = 48,
+    views: dict[str, np.ndarray] | None = None,
 ) -> dict:
     """기준 모델에 '설계와 다른 곳'을 색으로 얹는다. mesh 를 갱신해 돌려준다.
 
     3D 재구성을 거치지 않고 2D 에서 비교한다 — 형상은 CAD(정확)를 쓰고
     이미지는 증거로만 쓰므로 스캔 재구성 품질에 기대지 않는다.
+    views(촬영 원본)를 주면 윤곽 결손에 더해 표면 이상(균열·변색)도 칠한다.
     """
     verts = np.asarray(mesh["vertices"], dtype=np.float64)
     faces = np.asarray(mesh["faces"], dtype=np.int32)
@@ -412,20 +583,35 @@ def compare_with_scan(
     # 사용자가 멀쩡한 물건을 불량으로 판정하게 된다. 차라리 아무것도 칠하지 않고
     # 왜 비교를 못 했는지 알려주는 편이 낫다.
     if fit < MIN_ALIGNMENT_SCORE:
+        # 실측(2026-10-12): 물체를 올려둔 채 '배경 캡처'를 눌러 물체가 배경에
+        # 들어갔고, 실루엣이 거의 비어 일치도 0.13 이 나왔다. 이 경우를 따로 알린다.
+        empty = sorted(n for n, s in silhouettes.items() if (s > 0).mean() < 0.005)
+        hint = (
+            f"{', '.join(empty)} 에서 물체가 배경과 구분되지 않습니다. 물체를 치운 "
+            "상태에서 '배경 캡처'를 다시 누른 뒤 물체를 올려 다시 촬영하세요."
+            if len(empty) * 2 > len(silhouettes) else
+            "배경 캡처가 최신인지, config 의 카메라 view_dir 이 실제 배치와 맞는지 확인하세요."
+        )
         mesh["stats"] = {
             **mesh["stats"],
             "alignment_score": round(fit, 4),
             "comparison_skipped": (
                 f"CAD 모델을 실제 자세에 맞추지 못했습니다(일치도 {fit:.2f}, "
                 f"기준 {MIN_ALIGNMENT_SCORE}). 이 상태로 비교하면 정상품도 전부 "
-                "불량으로 표시됩니다. 배경 캡처가 최신인지, config 의 카메라 "
-                "view_dir 이 실제 배치와 맞는지 확인하세요."
+                f"불량으로 표시됩니다. {hint}"
             ),
             "num_defect_regions": 0,
         }
         return mesh
 
-    colors, stats = deviation_colors(verts, faces, volume, silhouettes, directions, rotation)
+    anomaly_score, anomaly = None, None
+    if views:
+        anomaly_score, anomaly = cad_surface_anomaly(
+            verts, faces, volume, views, silhouettes, directions, rotation
+        )
+    colors, stats = deviation_colors(
+        verts, faces, volume, silhouettes, directions, rotation, extra=anomaly_score
+    )
 
     mesh["vertex_colors"] = colors
     mesh["stats"] = {
@@ -434,7 +620,22 @@ def compare_with_scan(
         "num_defect_regions": 1 if stats["flagged_vertices"] else 0,
         **stats,
     }
+    if anomaly is not None:
+        mesh["stats"]["anomaly"] = anomaly
     return mesh
+
+
+@functools.lru_cache(maxsize=4)
+def _cached_mesh(path: Path, mtime_ns: int) -> tuple[np.ndarray, np.ndarray]:
+    """(경로, 수정 시각) 키로 load_mesh 결과를 기억한다.
+
+    models/ 에 직접 둔 .step/.stp 는 조회할 때마다 gmsh 로 다시 삼각형화해서 몇 초씩 걸렸다(업로드한
+    STEP 은 STL 로 바꿔 저장해 해당 없다). 파일을 고치면 수정 시각이 달라 새로 읽는다.
+    돌려주는 배열은 호출들이 공유하므로 쓰기를 막아 둔다 — 누가 고치면 다음 조회가 오염된다.
+    """
+    verts, faces = load_mesh(path)
+    verts.flags.writeable = faces.flags.writeable = False
+    return verts, faces
 
 
 def load_reference(root: Path, object_id: str) -> dict | None:
@@ -443,7 +644,7 @@ def load_reference(root: Path, object_id: str) -> dict | None:
     if path is None:
         return None
 
-    verts, faces = load_stl(path)
+    verts, faces = _cached_mesh(path, path.stat().st_mtime_ns)
     if len(faces) > MAX_FACES:
         logger.warning("%s 는 면이 %d개라 브라우저에 부담이 큽니다.", path.name, len(faces))
 

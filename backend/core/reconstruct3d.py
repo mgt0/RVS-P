@@ -18,7 +18,7 @@ cam1~cam5 의 5장(각 90° 간격)만으로 완전한 포토그래메트리
 
 출력은 웹(three.js)이 바로 먹는 형태:
   - vertices, faces (marching cubes 로 복셀→표면 메시)
-  - vertex_colors (양품=중립 그레이, 불량=선셋 오렌지 오버레이)
+  - vertex_colors (촬영 색 텍스처, 표면 이상 = 선셋 오렌지 오버레이)
 """
 
 from __future__ import annotations
@@ -50,9 +50,42 @@ BACKGROUND_DIFF_THRESHOLD = 30
 BACKGROUND_DIFF_FALLBACK = 0.25
 
 
+# 검사 ROI 를 쓸 때의 배경 무효 판정. ROI 안에서는 물체가 25% 를 넘는 게 정상이라
+# 화면 비율로는 판정할 수 없다. 대신 ROI 바깥 테두리 띠(폭 ROI_RING)만 본다 — 물체는
+# 가운데 있으니 띠가 대부분 '변했다'면 조명·노출이 바뀐 것이다.
+ROI_RING = 0.1
+ROI_RING_STALE = 0.5
+
+# ROI 안 GrabCut 보정. 배경 차분은 '배경 캡처와 달라진 곳'을 다 잡아서, 흰 큐브 뒤에서
+# 모니터·로봇팔·사람이 움직이면 그걸 물체로, 흰 벽 앞의 흰 큐브는 배경으로 판정했다.
+# 차분은 씨앗으로만 쓰고(LO 초과 = 아마 물체, HI 초과를 깎은 것 = 확실히 물체, ROI 테두리 =
+# 확실히 배경) 경계는 색 분포로 다시 정한다. 실측(2026-10-28, 9세트): 뷰 leave-one-out
+# 평균 0.09~0.52 → 0.50~0.69, 유리 너머 하단 C1 은 이후 뷰 선택에서 거의 항상 빠진다.
+GRABCUT_LO = 12
+GRABCUT_HI = 40
+GRABCUT_ITERS = 5
+GRABCUT_RING = 0.04
+
+# 실루엣 안 구멍 중 채운 면적 대비 이 비율보다 작은 것은 메운다. 흰 부품이 흰 배경 앞에
+# 서면 면 일부의 차분이 임계 아래로 떨어져 구멍이 나는데, visual hull 은 그 구멍을 관통
+# 터널로 깎는다(실측 2026-10-12: cam2/cam3 큐브 면에 구멍). 진짜 관통 홀은 보통 이보다 크다.
+MAX_HOLE_RATIO = 0.15
+
 # 실루엣이 화면의 이 비율보다 작으면 '물체를 못 찾았다'고 본다.
 # 스캔대 위 부품은 어느 뷰에서든 화면의 몇 % 는 차지한다. 0.5% 는 그보다 훨씬 작다.
 TINY_SILHOUETTE = 0.005
+
+# 뷰 하나가 나머지와 안 맞으면(leave-one-out IoU) 깎기에서 뺀다. visual hull 은 AND 라
+# 실루엣 한 장이 반쯤 비면(노출 과다로 흰 큐브가 배경에 묻힘 — 실측 cam2) 그만큼 형상이
+# 잘려 나간다. 나쁜 뷰 하나를 빼는 게 그 뷰를 믿는 것보다 낫다. 최소 MIN_VIEWS 대는 남긴다.
+MIN_VIEWS = 3
+VIEW_MAX_DROP = 2          # 한 번에 빼 보는 최대 뷰 수(5대 → 최소 3대 남김)
+# 평균이 이만큼 이상 올라야 뷰를 뺀다 — 같으면 뷰가 많은 쪽. 하단 C1 은 멀쩡해도 구조적으로
+# 점수가 낮아(합성 0.64) 빼면 평균이 0.02 쯤 오르는데, 그 C1 이 X·Z 폭을 잡는 유일한 뷰라
+# 빠지면 외접 치수가 60 → 85mm 로 부풀었다(합성 화이트밸런스 교란). 실데이터에서 실제로 나쁜
+# 뷰를 뺄 때는 +0.05~+0.33 이었다(2026-10-28, 9세트).
+VIEW_SUBSET_MARGIN = 0.04
+CONSISTENCY_RES = 32
 
 # 메시 평활화 강도(복셀 단위 가우시안 시그마). 0 이면 평활화 없음.
 #
@@ -72,6 +105,42 @@ TEXTURE_BLEND_VIEWS = 3
 # 가림 판정 허용오차(복셀 칸 단위). 표면은 복셀 한 칸 두께로 요철이 있어
 # 1 이하로 잡으면 멀쩡한 표면이 얼룩덜룩 빠지고, 크게 잡으면 뒷면이 새어 들어온다.
 OCCLUSION_DEPTH_TOL = 1.5
+# 정사영 경로에서 색을 뽑는 텍스처 해상도. 복셀 해상도(≤96)로 줄이면 원본에서 1~2px
+# 굵기인 균열 선이 평균에 묻혀 표면 이상 검출이 못 본다.
+TEXTURE_RES = 256
+
+# 표면 이상(균열·긁힘·펜 자국) 판정은 정점이 아니라 '원본 이미지'에서 한다(anomaly_map).
+# 블랙햇(닫힘 - 원본)은 커널보다 얇은 어두운 자국에만 반응하고, 면과 면 사이의 밝기 계단·
+# 완만한 음영에는 반응하지 않는다. 정점 색끼리 비교하던 방식은 정사영 근사의 몇 px 어긋남과
+# 면 경계 음영을 결함으로 읽었다(실측 2026-10-28: 깨끗한 큐브 정점의 15~20% 표시).
+ANOMALY_KERNEL_FRAC = 0.12   # 블랙햇 커널 = 실루엣 크기의 이 비율(이보다 굵은 자국은 못 본다)
+ANOMALY_BLACKHAT = 40.0      # 주변보다 이만큼(회색조) 어두우면 시작, 두 배에서 심각도 1
+# 자국은 '부품 표면에 사방이 둘러싸인' 곳에서만 본다(_part_surface). 표면 = 실루엣 밝기
+# 상위 25% 지점의 이 비율 이상인 픽셀 중 실루엣 중심부와 이어진 덩어리, 그 안의 구멍(=자국)은
+# 메우고 가장자리는 ANOMALY_SURFACE_ERODE_PX 만큼 깎는다.
+ANOMALY_SURFACE_FRAC = 0.75
+ANOMALY_SURFACE_ERODE_PX = 3
+# 왜: 깨끗한 큐브의 오탐은 전부 큐브 면이 아니라 실루엣에 덧붙은 배경 위였다 — 큐브 테두리
+# 바로 바깥의 얇은 틈(큐브와 뒤쪽 밝은 물체 사이)이 블랙햇에 '자국'처럼 걸렸다. 실측
+# (2026-10-28, 저장된 9세트, 표시 정점 비율): 이전 방식(닫힘 밝기 ≥ 0.8×기준) 깨끗 1.8~3.6% ·
+# 자국 3.6~8.8% → 이 방식 깨끗 0.00~0.27% · 자국 3.2~6.8%. 같은 큐브·리그 데이터라 부품·
+# 조명이 바뀌면 다시 볼 것(합성 장면·교란 시험은 tests/test_scan3d.py 와 README).
+# 품질 게이트(_quality). 하나라도 걸리면 '신뢰도 낮음' — 텍스처·주황을 끄고 이유와 할 일을 단다.
+# 형상·색 대응이 틀린 상태의 주황은 결함 위치가 아니라 엉뚱한 곳을 가리킨다.
+#   일치도: 남은 뷰의 leave-one-out 평균. 실측(2026-10-28) 현재 9세트 0.73~0.79, 실루엣이
+#           망가졌던 이전 파이프라인 0.08~0.32.
+#   볼록도: 깎은 형상 복셀 부피 / 볼록 껍질 부피(_solidity). 볼록한 부품의 visual hull 은 볼록하다 —
+#           실루엣 일부가 빠지면 형상이 파여 떨어진다. 실측: 현재 9세트 0.86~0.95, 1차 방식(C1 만
+#           뺌)에서 무너졌던 2세트 0.71·0.72, 들쭉날쭉했던 defect/cube 0.78.
+#           오목한 부품(ㄱ자 브래킷 등)은 정상이어도 낮게 나온다 — 이유 문구에 그렇게 적는다.
+QUALITY_MIN_CONSISTENCY = 0.5
+QUALITY_MIN_SOLIDITY = 0.8
+# 이 내적보다 비스듬히 보이는 정점은 판정에서 뺀다. 스치듯 보면 면 색이 어둡게 찍혀
+# 멀쩡한 테두리가 결함으로 잡힌다.
+ANOMALY_MIN_FACING = 0.2
+ANOMALY_MIN_REGION = 6     # 이보다 작은 표시 덩어리(정점 수)는 노이즈로 지운다
+# 불량 표시색 = 대시보드 --accent-sunset(#ff7a17)
+SUNSET = np.array([1.0, 0.478, 0.09], dtype=np.float32)
 
 # 각 카메라 슬롯이 물체를 바라보는 방향. space carving 의 투영 기준이다.
 # 여기 값은 기본값일 뿐이고, 실제 리그는 config.yaml 의 cameras.*.view_dir 로 덮어쓴다
@@ -174,7 +243,48 @@ def _match_exposure(image: np.ndarray, background: np.ndarray) -> tuple[np.ndarr
     return image, matched
 
 
-def extract_silhouette(image: np.ndarray, background: np.ndarray | None = None) -> np.ndarray:
+def _roi_box(shape, roi) -> tuple[int, int, int, int] | None:
+    """정규화 ROI [x0, y0, x1, y1] → 픽셀 박스. roi 가 None 이면 None(화면 전체)."""
+    if roi is None:
+        return None
+    h, w = shape[:2]
+    x0, y0, x1, y1 = (float(np.clip(v, 0.0, 1.0)) for v in roi)
+    box = (int(round(x0 * w)), int(round(y0 * h)), int(round(x1 * w)), int(round(y1 * h)))
+    # 폭이 0 인 ROI 로 실루엣이 통째로 사라지는 것보다 화면 전체를 쓰는 편이 낫다.
+    # (config 는 로딩할 때 검증하므로 여기 오는 건 계산된 ROI 의 극단적인 경우뿐)
+    return box if box[2] - box[0] >= 8 and box[3] - box[1] >= 8 else None
+
+
+def _in_roi(fn, image: np.ndarray, box) -> np.ndarray:
+    """fn(image) → 마스크를 ROI 안에서만 계산해 원래 크기로 돌려준다.
+
+    Otsu·채도 임계는 ROI 안에서 정해야 한다. 화면 전체로 정하면 물체가 작아
+    분포가 배경에 끌려간다.
+    """
+    if box is None:
+        return fn(image)
+    x0, y0, x1, y1 = box
+    out = np.zeros(image.shape[:2], np.uint8)
+    out[y0:y1, x0:x1] = fn(image[y0:y1, x0:x1])
+    return out
+
+
+def _diff_is_stale(mask: np.ndarray, box) -> bool:
+    """배경 차분 결과를 못 쓰는지(배경 캡처 이후 조명·노출이 바뀌었는지)."""
+    if box is None:
+        return (mask > 0).mean() > BACKGROUND_DIFF_FALLBACK
+    x0, y0, x1, y1 = box
+    roi = mask[y0:y1, x0:x1] > 0
+    h, w = roi.shape
+    by, bx = max(1, int(h * ROI_RING)), max(1, int(w * ROI_RING))
+    ring = np.ones_like(roi)
+    ring[by:h - by, bx:w - bx] = False
+    return roi[ring].mean() > ROI_RING_STALE
+
+
+def extract_silhouette(
+    image: np.ndarray, background: np.ndarray | None = None, roi=None
+) -> np.ndarray:
     """전경(물체) 마스크 추출.
 
     background 가 있으면 배경 차분, 없으면 Otsu 이진화로 폴백한다.
@@ -183,7 +293,13 @@ def extract_silhouette(image: np.ndarray, background: np.ndarray | None = None) 
     선반·창문·현수막이 화면의 대부분을 차지하는데, 흑백 밝기만으로는 노란 부품과
     배경이 구분되지 않는다(실측: 마스크가 현수막 글자에 붙고 물체는 통째로 누락).
     빈 컨베이어를 한 번 찍어두고 그것과의 차이를 보면 배경이 무엇이든 상관없어진다.
+
+    roi: 정규화 [x0, y0, x1, y1]. 물체가 멈추는 자리만 본다. 배경 캡처 이후 뒤에서
+    사람·로봇팔이 움직이면 차분이 그것까지 물체로 잡는데(실측 2026-10-12 cam2·cam4),
+    ROI 밖은 아예 보지 않으면 그 문제가 사라진다.
     """
+    box = _roi_box(image.shape, roi)
+    original = image
     if background is not None and background.shape == image.shape:
         # 촬영본과 배경은 서로 다른 시각에 찍혀 플리커 위상이 다르다. 그대로 빼면
         # 줄무늬 차이가 그대로 남아 실루엣에 가로 틈이 생긴다. 양쪽 다 편다.
@@ -204,31 +320,86 @@ def extract_silhouette(image: np.ndarray, background: np.ndarray | None = None) 
         # 채널 최대값: 색만 다르고 밝기는 비슷한 물체(노란 부품 위 흰 조명)도 잡는다.
         diff = diff.max(axis=2)
         _, mask = cv2.threshold(diff, BACKGROUND_DIFF_THRESHOLD, 255, cv2.THRESH_BINARY)
+        mask = _in_roi(lambda m: m, mask, box)
 
+        # ROI 가 있으면 차분은 GrabCut 의 씨앗으로만 쓴다. 배경 캡처 뒤에 ROI 테두리까지
+        # 바뀌었어도(아래 '배경 무효') GrabCut 은 테두리를 배경으로 못박고 색으로 경계를 다시
+        # 잡아서 채도 폴백보다 낫다(실측 2026-10-28: 그런 세트에서 뷰 일관성 0.1 → 0.6대).
+        refined = _grabcut_refine(original, diff, box) if box is not None else None
+        if refined is not None:
+            mask = refined
         # 배경 차분이 화면 절반 이상을 물체로 잡으면 그 결과는 못 쓴다.
         # 배경 캡처 이후 조명이 바뀌었거나 배경에 다른 물체가 있었다는 뜻이고,
         # 이 상태로 두면 실루엣이 화면 전체가 되어 정합도 비교도 무의미해진다.
         # 조명 변화에 둔감한 채도 기반으로 갈아탄다(실측: 배경 차분 54~80% → 채도 기반).
-        if (mask > 0).mean() > BACKGROUND_DIFF_FALLBACK:
+        elif _diff_is_stale(mask, box):
             logger.warning(
-                "배경 차분이 화면의 %.0f%% 를 물체로 잡았습니다. 배경 캡처가 현재 조명과 "
-                "맞지 않는 것으로 보여 채도 기반으로 전환합니다.", 100 * (mask > 0).mean()
+                "배경 차분이 %s의 %.0f%% 를 물체로 잡았습니다. 배경 캡처가 현재 조명과 "
+                "맞지 않는 것으로 보여 채도 기반으로 전환합니다.",
+                "화면" if box is None else "ROI", 100 * (mask > 0).mean(),
             )
-            mask = _saturation_mask(image)
+            mask = _in_roi(_saturation_mask, image, box)
     else:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        def _otsu(img: np.ndarray) -> np.ndarray:
+            gray = cv2.GaussianBlur(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+            # Otsu 자동 임계. 물체가 배경보다 어둡거나 밝은 양쪽 모두 처리하기 위해
+            # 전경 비율이 절반을 넘으면 반전한다.
+            _, m = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            return cv2.bitwise_not(m) if m.mean() > 127 else m
 
-        # Otsu 자동 임계. 물체가 배경보다 어둡거나 밝은 양쪽 모두 처리하기 위해
-        # 전경 비율이 절반을 넘으면 반전한다.
-        _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        if mask.mean() > 127:
-            mask = cv2.bitwise_not(mask)
+        mask = _in_roi(_otsu, image, box)
 
-    return _pick_object_component(mask)
+    return _pick_object_component(mask, box)
 
 
-def _pick_object_component(mask: np.ndarray) -> np.ndarray:
+def _grabcut_refine(image: np.ndarray, diff: np.ndarray, box) -> np.ndarray | None:
+    """ROI 안에서 배경 차분을 씨앗으로 GrabCut 을 돌려 물체 경계를 다시 정한다(GRABCUT_* 참고).
+
+    씨앗이 한쪽뿐이면(차분이 전부 낮으면) GrabCut 이 색 분포를 못 세운다 — None 을 돌려
+    호출자가 차분·채도 경로로 가게 한다.
+    """
+    x0, y0, x1, y1 = box
+    d, crop = diff[y0:y1, x0:x1], image[y0:y1, x0:x1]
+    seeds = np.full(d.shape, cv2.GC_PR_BGD, np.uint8)
+    seeds[d > GRABCUT_LO] = cv2.GC_PR_FGD
+    sure = cv2.erode((d > GRABCUT_HI).astype(np.uint8), np.ones((5, 5), np.uint8))
+    seeds[sure > 0] = cv2.GC_FGD
+    h, w = d.shape
+    by, bx = max(2, int(h * GRABCUT_RING)), max(2, int(w * GRABCUT_RING))
+    ring = np.ones(d.shape, bool)
+    ring[by:h - by, bx:w - bx] = False
+    seeds[ring] = cv2.GC_BGD
+    if not (seeds == cv2.GC_PR_FGD).any() and not (seeds == cv2.GC_FGD).any():
+        return None
+    # GrabCut 의 색 분포 초기화(k-means)는 OpenCV 전역 난수를 쓴다. 고정하지 않으면 같은 사진도
+    # 돌릴 때마다 실루엣이 달라진다(실측 2026-10-28: 같은 세트에서 C1 이 빠졌다 남았다 함).
+    cv2.setRNGSeed(0)
+    try:
+        cv2.grabCut(crop, seeds, None, np.zeros((1, 65)), np.zeros((1, 65)),
+                    GRABCUT_ITERS, cv2.GC_INIT_WITH_MASK)
+    except cv2.error:
+        return None
+    out = np.zeros(diff.shape, np.uint8)
+    out[y0:y1, x0:x1] = np.where((seeds == cv2.GC_FGD) | (seeds == cv2.GC_PR_FGD), 255, 0)
+    return out
+
+
+def _fill_small_holes(mask: np.ndarray) -> np.ndarray:
+    """실루엣 안의 작은 구멍을 메운다(MAX_HOLE_RATIO 참고)."""
+    from scipy import ndimage
+
+    solid = mask > 0
+    filled = ndimage.binary_fill_holes(solid)
+    holes = filled & ~solid
+    if not holes.any():
+        return mask
+    labels, n = ndimage.label(holes)
+    sizes = np.asarray(ndimage.sum(holes, labels, range(1, n + 1)))
+    small = np.isin(labels, 1 + np.flatnonzero(sizes < MAX_HOLE_RATIO * filled.sum()))
+    return np.where(solid | small, 255, 0).astype(np.uint8)
+
+
+def _pick_object_component(mask: np.ndarray, box=None) -> np.ndarray:
     """마스크를 다듬고 '물체'에 해당하는 덩어리 하나만 남긴다.
 
     가장 큰 덩어리를 고르지 않는다. 스캔 리그가 실험실 한가운데 있으면
@@ -238,7 +409,8 @@ def _pick_object_component(mask: np.ndarray) -> np.ndarray:
 
     물체는 리그 중앙에 놓인다는 전제로, 중앙 ROI 와 겹치는 면적이 가장 큰
     덩어리를 고른다. 중앙 픽셀 하나만 보면 물체에 구멍이 있거나 살짝 치우쳤을 때
-    놓치므로 영역으로 판단한다.
+    놓치므로 영역으로 판단한다. 검사 ROI(box)가 있으면 화면이 아니라 그 ROI 의
+    가운데를 기준으로 삼는다.
     """
     # 잔 구멍 메우기 + 노이즈 제거
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
@@ -250,9 +422,11 @@ def _pick_object_component(mask: np.ndarray) -> np.ndarray:
         return mask
 
     h, w = mask.shape
+    bx0, by0, bx1, by1 = box if box is not None else (0, 0, w, h)
+    bw, bh = bx1 - bx0, by1 - by0
     roi = np.zeros_like(mask, dtype=bool)
-    y0, y1 = int(h * (1 - CENTER_ROI) / 2), int(h * (1 + CENTER_ROI) / 2)
-    x0, x1 = int(w * (1 - CENTER_ROI) / 2), int(w * (1 + CENTER_ROI) / 2)
+    y0, y1 = by0 + int(bh * (1 - CENTER_ROI) / 2), by0 + int(bh * (1 + CENTER_ROI) / 2)
+    x0, x1 = bx0 + int(bw * (1 - CENTER_ROI) / 2), bx0 + int(bw * (1 + CENTER_ROI) / 2)
     roi[y0:y1, x0:x1] = True
 
     overlaps = [int(np.count_nonzero((labels == i) & roi)) for i in range(1, n)]
@@ -262,7 +436,7 @@ def _pick_object_component(mask: np.ndarray) -> np.ndarray:
         # 배경과 구분이 안 된다. 넓이 기준으로 되돌아가되, 그대로 두면
         # 교집합이 비어 상위에서 EmptyHullError 로 잡힌다.
         best = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    return np.where(labels == best, 255, 0).astype(np.uint8)
+    return _fill_small_holes(np.where(labels == best, 255, 0).astype(np.uint8))
 
 
 def view_basis(direction) -> tuple[np.ndarray, np.ndarray]:
@@ -337,49 +511,102 @@ def _carve_visual_hull(
     해당 픽셀이 실루엣 내부이면 유지, 하나라도 밖이면 제거한다.
     반환: (res,res,res) bool/float 볼륨. 1=물체, 0=공기.
     """
-    res = resolution
-    volume = np.ones((res, res, res), dtype=bool)
+    # 뷰마다 물체 크기·위치가 다르므로 바운딩박스 기준으로 맞춘 뒤 투영한다.
+    masks = {n: normalize_silhouette(s, resolution) for n, s in silhouettes.items()}
+    projections = _ortho_projections(masks, resolution, directions)
+    return _carve(masks, projections, (resolution,) * 3).astype(np.float32)
 
-    # 복셀 인덱스 격자 (정규화 좌표 0~1)
-    idx = np.arange(res)
-    gx, gy, gz = np.meshgrid(idx, idx, idx, indexing="ij")
 
-    # 복셀 중심을 [-0.5, 0.5] 정규 좌표로. 원점이 물체 중심이다.
-    cx = gx / (res - 1) - 0.5
-    cy = gy / (res - 1) - 0.5
-    cz = gz / (res - 1) - 0.5
+def _view_direction(directions, name) -> tuple[float, float, float]:
+    """뷰 하나의 시선 방향: config 값(directions) → 기본 배치(VIEW_DIRECTIONS) → +Z.
 
-    for name, raw in silhouettes.items():
-        # 뷰마다 물체 크기·위치가 다르므로 바운딩박스 기준으로 맞춘 뒤 투영한다.
-        mask = normalize_silhouette(raw, res)
-        h, w = mask.shape
+    깎기(_ortho_projections)와 색·표면 이상 샘플링(_ortho_view_samples)이 같은 규칙을 써야 한다.
+    갈리면 형상은 한 방향 기준으로 깎아 놓고 색은 다른 방향에서 뽑는다.
+    """
+    return (directions or {}).get(name, VIEW_DIRECTIONS.get(name, (0.0, 0.0, 1.0)))
 
-        # 시선 방향에 수직인 평면의 정규직교 기저(right, up)를 만들어 그 위에 정사영한다.
-        # 예전 구현은 X·Y·Z 세 축 중 하나로만 투영해서, 대각선에 달린 카메라를
-        # 가장 가까운 축으로 스냅해 버렸다. 실제 리그는 대각선 4대 + 하단 1대라
-        # 어느 것도 축에 정렬돼 있지 않아 형상이 물체와 전혀 다르게 나왔다.
-        table = directions or VIEW_DIRECTIONS
-        right, up = view_basis(table.get(name, VIEW_DIRECTIONS.get(name, (0.0, 0.0, 1.0))))
 
-        pu = cx * right[0] + cy * right[1] + cz * right[2]
-        pv = cx * up[0] + cy * up[1] + cz * up[2]
+def _ortho_projections(names, resolution: int, directions) -> dict:
+    """정사영 경로의 뷰별 (px, py, valid). 정규화 마스크 밖으로 나가는 복셀은 없어 valid=None."""
+    # 시선 방향에 수직인 평면의 정규직교 기저(right, up)를 만들어 그 위에 정사영한다.
+    # 예전 구현은 X·Y·Z 세 축 중 하나로만 투영해서, 대각선에 달린 카메라를
+    # 가장 가까운 축으로 스냅해 버렸다. 실제 리그는 대각선 4대 + 하단 1대라
+    # 어느 것도 축에 정렬돼 있지 않아 형상이 물체와 전혀 다르게 나왔다.
+    out = {}
+    for name in names:
+        px, py = _project_pixels(resolution, _view_direction(directions, name), resolution)
+        out[name] = (px.ravel(), py.ravel(), None)
+    return out
 
-        # 정규 좌표 → 픽셀.
-        # 스케일은 '이 방향에서 본 복셀 정육면체의 투영 폭'이다. 실루엣을 바운딩박스로
-        # 정규화해 물체가 정사각형을 꽉 채우게 만들었으므로, 정육면체의 투영도 같은
-        # 정사각형을 꽉 채워야 짝이 맞는다. 외접 반경(sqrt(3)/2)으로 나누면 투영이
-        # 마스크 안쪽으로 쪼그라들어 아무것도 안 깎인다(실측: 점유율 100%).
-        # 정육면체 꼭짓점의 최대 투영값 = 0.5 * (|ax|+|ay|+|az|).
-        su = 0.5 * float(np.abs(right).sum())
-        sv = 0.5 * float(np.abs(up).sum())
 
-        px = np.clip(((pu / su * 0.5 + 0.5) * (w - 1)).astype(np.int32), 0, w - 1)
-        # 이미지 y 는 아래로 증가하므로 up 을 뒤집는다.
-        py = np.clip(((0.5 - pv / sv * 0.5) * (h - 1)).astype(np.int32), 0, h - 1)
+def _carve(masks: dict[str, np.ndarray], projections: dict, shape) -> np.ndarray:
+    """미리 투영해 둔 좌표로 깎는다. 정사영·원근 경로가 같은 AND 를 쓴다.
 
-        volume &= mask[py, px] > 0
+    valid 가 False 인 복셀(그 카메라 화면 밖·뒤)은 그 카메라가 판단할 근거가 없으므로
+    깎지 않는다.
 
-    return volume.astype(np.float32)
+    'N-1 개 뷰에서 안쪽이면 남기기' 같은 관용 깎기는 시험 후 버렸다 — 한 뷰만 깎을 수 있는
+    영역(하단 뷰의 X·Z 바깥 등)이 통째로 남아 점유율이 1.0 근처까지 부풀었다(실측 2026-10-28).
+    틀린 뷰는 깎기 전에 빼는 쪽(_select_views)이 낫다.
+    """
+    keep = np.ones(int(np.prod(shape)), bool)
+    for name, mask in masks.items():
+        px, py, valid = projections[name]
+        inside = mask[py, px] > 0
+        keep &= inside if valid is None else (inside | ~valid)
+    return keep.reshape(shape)
+
+
+def _loo_scores(masks: dict, projections: dict, shape, close: int = 0) -> dict[str, float]:
+    """뷰마다 leave-one-out IoU: 나머지 뷰로 깎은 형상이 이 뷰의 실루엣을 얼마나 맞히나.
+
+    close: 원근 경로는 복셀 간격이 화면에서 몇 px 씩 벌어져 투영 점 사이에 틈이 난다.
+    그 간격(px)보다 큰 커널로 한 번 닫아야 실루엣과 비교가 된다. 0 이면 닫지 않는다.
+    """
+    scores = {}
+    for held in masks:
+        vol = _carve({n: m for n, m in masks.items() if n != held}, projections, shape).ravel()
+        px, py, valid = projections[held]
+        sel = vol if valid is None else vol & valid
+        mask = masks[held] > 0
+        shadow = np.zeros(mask.shape, np.uint8)
+        shadow[py[sel], px[sel]] = 1
+        if close > 1:
+            shadow = cv2.morphologyEx(shadow, cv2.MORPH_CLOSE, np.ones((close, close), np.uint8))
+        shadow = shadow > 0
+        union = (shadow | mask).sum()
+        scores[held] = float((shadow & mask).sum() / union) if union else 0.0
+    return scores
+
+
+def _select_views(masks: dict, projections: dict, shape, close: int = 0):
+    """leave-one-out 평균이 가장 높은 뷰 조합을 고른다. (남길 뷰, 뺀 뷰{이름: 점수}, 뷰별 점수).
+
+    최대 VIEW_MAX_DROP 대까지 빼 본 모든 조합(5대면 16가지)을 잰다. 나쁜 뷰는 깎기에 참여해
+    다른 뷰들의 점수까지 끌어내리므로, 빼면 남은 뷰들의 평균이 오른다. 차이가
+    VIEW_SUBSET_MARGIN 보다 작으면 뷰가 많은 쪽을 남긴다.
+
+    예전에는 '절대 점수 0.35 미만이면서 나머지 중앙값의 0.6배 미만'인 뷰를 하나씩 뺐다.
+    나쁜 뷰가 둘이면 서로 중앙값을 끌어내려 아무것도 못 뺐다 — 실측(2026-10-28) 형상이
+    무너지던 2세트가 그랬다(볼록도 0.76·0.77 → 이 방식 0.94·0.94, CAD 정합 9세트 모두 상승).
+    한계: 정사영 경로의 바운딩박스 정규화는 격자와 나란하지 않은 물체에서 뷰마다 축척이
+    어긋나, 멀쩡한 뷰를 빼기도 한다(합성 구: C5 제외). 캘리브레이션 경로에는 이 문제가 없다.
+    """
+    import itertools
+
+    names = list(masks)
+    if len(names) < 3:
+        return names, {}, {}
+    full = _loo_scores(masks, projections, shape, close)
+    best = (float(np.mean(list(full.values()))), names, full)
+    for k in range(len(names) - 1, max(MIN_VIEWS, len(names) - VIEW_MAX_DROP) - 1, -1):
+        for sub in itertools.combinations(names, k):
+            sc = _loo_scores({n: masks[n] for n in sub}, projections, shape, close)
+            mean = float(np.mean(list(sc.values())))
+            if mean > best[0] + VIEW_SUBSET_MARGIN:
+                best = (mean, list(sub), sc)
+    keep = best[1]
+    return keep, {n: round(full[n], 3) for n in names if n not in keep}, best[2]
 
 
 def _clean_volume(volume: np.ndarray, smooth_sigma: float = MESH_SMOOTH_SIGMA) -> np.ndarray:
@@ -437,53 +664,27 @@ def _project_pixels(res: int, direction, size: int):
     right, up = view_basis(direction)
     pu = cx * right[0] + cy * right[1] + cz * right[2]
     pv = cx * up[0] + cy * up[1] + cz * up[2]
-    su = 0.5 * float(np.abs(right).sum())
-    sv = 0.5 * float(np.abs(up).sum())
+    s = _ortho_scale(right, up)
 
-    px = np.clip(((pu / su * 0.5 + 0.5) * (size - 1)).astype(np.int32), 0, size - 1)
-    py = np.clip(((0.5 - pv / sv * 0.5) * (size - 1)).astype(np.int32), 0, size - 1)
+    px = np.clip(((pu / s * 0.5 + 0.5) * (size - 1)).astype(np.int32), 0, size - 1)
+    # 이미지 y 는 아래로 증가하므로 up 을 뒤집는다.
+    py = np.clip(((0.5 - pv / s * 0.5) * (size - 1)).astype(np.int32), 0, size - 1)
     return px, py
 
 
-def silhouette_consistency(
-    silhouettes: dict[str, np.ndarray],
-    directions: dict[str, tuple[float, float, float]],
-    resolution: int = 32,
-) -> float:
-    """카메라 방향이 얼마나 맞는지 0~1 로 점수화한다 (leave-one-out).
+def _ortho_scale(right, up) -> float:
+    """정사영 좌표 → 정규화 마스크 픽셀의 배율. 가로·세로에 '같은' 값을 쓴다.
 
-    카메라를 하나씩 빼고 나머지로 형상을 깎은 뒤, **빠진 카메라의 실루엣을
-    예측**하게 한다. 방향이 맞으면 예측이 실제 실루엣과 겹치고, 틀리면 어긋난다.
+    스케일은 '이 방향에서 본 복셀 정육면체의 투영 폭'이다(꼭짓점의 최대 투영값 =
+    0.5·(|ax|+|ay|+|az|)). 외접 반경(sqrt(3)/2)으로 나누면 투영이 마스크 안쪽으로
+    쪼그라들어 아무것도 안 깎인다(실측: 점유율 100%).
 
-    왜 leave-one-out 인가: 전체 뷰로 깎은 형상을 그대로 되쏘면 정의상 항상
-    실루엣 '안에' 들어간다(carve 가 AND 이므로). 그러면 덜 깎일수록 점수가 올라
-    각도가 틀려 뭉툭해진 형상이 정답보다 높은 점수를 받는다. 실제로 그렇게 됐다
-    (합성 검증: 정답 0.863 < 틀린 각도 0.922). 빼놓은 뷰는 깎기에 참여하지
-    않으므로 뭉툭한 형상은 예측이 넘쳐 벌점을 받는다 — 이 편향이 사라진다.
-
-    체커보드 없이 데이터만으로 각도를 맞출 수 있는 근거다.
+    예전 구현은 가로(su)·세로(sv)를 따로 나눠 정육면체 투영을 정사각형에 '늘려' 채웠다.
+    그런데 실루엣은 종횡비를 유지한 채 정사각으로 패딩된다(normalize_silhouette).
+    둘이 안 맞아 대각선 카메라마다 형상이 한 축으로 눌렸다(합성 상자 IoU 비교는
+    tests/test_scan3d.py). 긴 쪽 하나로 맞추면 패딩 규칙과 정확히 같아진다.
     """
-    names = list(silhouettes)
-    if len(names) < 3:
-        return 0.0
-
-    scores = []
-    for held_out in names:
-        rest = {n: s for n, s in silhouettes.items() if n != held_out}
-        volume = _carve_visual_hull(rest, resolution, directions) > 0.5
-        if not volume.any():
-            scores.append(0.0)
-            continue
-
-        mask = normalize_silhouette(silhouettes[held_out], resolution) > 0
-        px, py = _project_pixels(
-            resolution, directions.get(held_out, (0.0, 0.0, 1.0)), resolution
-        )
-        shadow = np.zeros((resolution, resolution), bool)
-        shadow[py[volume], px[volume]] = True
-        union = (shadow | mask).sum()
-        scores.append((shadow & mask).sum() / union if union else 0.0)
-    return float(np.mean(scores))
+    return 0.5 * max(float(np.abs(right).sum()), float(np.abs(up).sum()))
 
 
 def _volume_to_mesh(volume: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -495,7 +696,13 @@ def _volume_to_mesh(volume: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndar
     try:
         from skimage import measure
 
-        verts, faces, normals, _ = measure.marching_cubes(_clean_volume(volume), level=0.5)
+        # 한 칸씩 0 으로 둘러싼다. 형상이 격자 경계에 닿으면(벨트에 놓인 물체의 밑면,
+        # 정사영 경로는 정규화 때문에 늘 닿는다) marching cubes 가 그 면을 만들지 않아
+        # 메시에 구멍이 뚫린다.
+        verts, faces, normals, _ = measure.marching_cubes(
+            np.pad(_clean_volume(volume), 1), level=0.5
+        )
+        verts -= 1.0
         # 투영을 위해 정규화 전 좌표(원점이 중심인 정규 좌표계) 저장
         raw_verts = verts / (volume.shape[0] - 1) - 0.5
         # 중심 정렬 + 단위 정규화
@@ -554,55 +761,33 @@ def _voxel_cube_mesh(volume: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.nda
     return verts, faces, normals, raw_verts
 
 
-def _apply_texture_projection(
-    raw_verts: np.ndarray,
-    normals: np.ndarray,
-    view_images: dict[str, np.ndarray],
-    silhouettes: dict[str, np.ndarray],
-    directions: dict[str, tuple[float, float, float]],
-    resolution: int
-) -> np.ndarray:
-    """각 정점에 실제 촬영 픽셀을 입힌다.
+def _map_texture(values: np.ndarray, mask: np.ndarray, resolution: int) -> np.ndarray:
+    """0~1 단일 채널 맵을 _view_texture 와 '똑같이' 잘라 펴 (res, res, 1) 로 만든다.
 
-    카메라 하나를 골라 덮어쓰는 대신, 그 정점을 '실제로 볼 수 있는' 카메라들만
-    추려 내적 가중으로 섞는다. 세 가지를 거른다.
-
-    1) 실루엣 밖 샘플은 버린다. 텍스처는 바운딩박스로 잘라낸 사각형이라 물체
-       주변 배경(초록 매트·방 안 풍경)이 그대로 들어 있다. 거르지 않으면 윤곽
-       근처 정점이 배경색을 집어와 부품 테두리에 색 띠가 생긴다.
-    2) 가려진 정점은 버린다(z-버퍼). 법선 내적만 보면 뒷면 정점도 그 카메라를
-       '정면으로 본다'고 판정되는데, 그 픽셀에 찍힌 것은 앞면이다.
-    3) 남은 카메라 중 상위 몇 개를 dot^2 가중으로 섞는다. 하나만 쓰면 담당이
-       바뀌는 경계에서 색이 뚝 끊겨 이음새가 보인다.
-
-    어느 카메라에서도 안 보이는 정점은 중립 회색으로 남긴다 — 검사 화면에서
-    색을 지어내는 것보다 '정보 없음'이 안전하다.
+    좌표 변환을 따로 짜면 색과 이상 맵이 서로 다른 곳을 가리킨다 — 같은 함수를 그대로 탄다.
     """
-    num_verts = len(raw_verts)
-    colors = np.full((num_verts, 3), NEUTRAL_GRAY, dtype=np.float32)
-    if num_verts == 0:
-        return colors
+    gray = cv2.cvtColor(np.clip(values * 255.0, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+    tex, _ = _view_texture(gray, mask, resolution)
+    return tex[:, :, :1]
 
-    # 후보 카메라별 (가중치, 색) 을 쌓아 마지막에 한 번에 섞는다.
-    weight_sum = np.zeros(num_verts, dtype=np.float32)
-    color_sum = np.zeros((num_verts, 3), dtype=np.float32)
-    # 상위 K 개만 반영하기 위해 각 정점이 현재까지 받은 가중치를 정렬해 들고 있는다.
-    kept_weights = np.zeros((num_verts, TEXTURE_BLEND_VIEWS), dtype=np.float32)
-    kept_colors = np.zeros((num_verts, TEXTURE_BLEND_VIEWS, 3), dtype=np.float32)
 
+def _ortho_view_samples(raw_verts, normals, view_images, silhouettes, directions, resolution) -> dict:
+    """정사영 경로: 뷰별 (정점 색, 유효, 법선·시선 내적, 이상 맵). 텍스처·표면 이상이 같이 쓴다."""
+    out = {}
     # 정점 깊이 비교 허용오차. 복셀 한 칸보다 넉넉해야 표면이 얼룩덜룩 빠지지
     # 않고, 너무 크면 뒷면이 새어 들어온다.
     depth_tol = OCCLUSION_DEPTH_TOL / max(resolution, 1)
+    tex_res = max(resolution, TEXTURE_RES)
 
     for name, img in view_images.items():
         mask = silhouettes.get(name)
         if mask is None:
             continue
-        tex, tex_mask = _view_texture(img, mask, resolution)
+        tex, tex_mask = _view_texture(img, mask, tex_res)
         if tex is None:
             continue
 
-        d = np.asarray(directions.get(name, (0.0, 0.0, 1.0)), dtype=np.float64)
+        d = np.asarray(_view_direction(directions, name), dtype=np.float64)
         norm = np.linalg.norm(d)
         if norm < 1e-9:
             continue
@@ -612,7 +797,8 @@ def _apply_texture_projection(
         dot = (normals @ d.astype(np.float32)).astype(np.float32)
 
         # carve/_project_pixels 와 완전히 같은 정사영 식을 쓴다. 여기서 어긋나면
-        # 형상은 맞는데 색만 밀려 칠해진다.
+        # 형상은 맞는데 색만 밀려 칠해진다. 가림 판정은 복셀 격자 해상도로,
+        # 색은 더 고운 텍스처에서 뽑는다.
         right, up = view_basis(d)
         fx, fy = _project_uv(raw_verts, right, up, resolution)
 
@@ -620,11 +806,61 @@ def _apply_texture_projection(
         depth = (raw_verts @ d.astype(np.float32)).astype(np.float32)
         visible = _visible_by_zbuffer(fx, fy, depth, resolution, depth_tol)
 
-        sample, inside = _sample_bilinear(tex, tex_mask, fx, fy)
-        ok = (dot > 0) & visible & inside
+        sx, sy = _project_uv(raw_verts, right, up, tex_res)
+        # 색은 실루엣이 아니라 '부품 표면'(_part_surface)에서만 뽑는다. 실루엣에 덧붙은 배경
+        # (매트·뒤쪽 물체)을 큐브 옆면에 칠하던 원인이었다 — 그런 정점은 다른 뷰의 색을 받거나
+        # 중립 회색으로 남는다.
+        surface = _part_surface(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), mask > 0)
+        surf_tex = _map_texture(surface.astype(np.float32), mask, tex_res)[:, :, 0] > 0.5
+        sample, inside = _sample_bilinear(tex, surf_tex & tex_mask, sx, sy)
+        anom, _ = _sample_bilinear(_map_texture(anomaly_map(img, mask, surface), mask, tex_res), tex_mask, sx, sy)
+        out[name] = (sample, (dot > 0) & visible & inside, dot, anom[:, 0])
+    return out
+
+
+def _metric_view_samples(verts_mm, normals, view_images, silhouettes, cameras, voxel_mm) -> dict:
+    """캘리브레이션 경로: 정점(mm)을 실제 카메라 모델로 원본 이미지에 투영해 색을 뽑는다."""
+    out = {}
+    for name, img in view_images.items():
+        cam, mask = cameras.get(name), silhouettes.get(name)
+        if cam is None or mask is None or not mask.any():
+            continue
+        uv, valid = cam.project(verts_mm)
+        depth = verts_mm @ cam.R[2] + cam.tvec[2]           # 카메라 광축 방향 거리(mm)
+        to_cam = cam.center - verts_mm
+        facing = ((normals * to_cam).sum(axis=1)
+                  / (np.linalg.norm(to_cam, axis=1) + 1e-9)).astype(np.float32)
+
+        # 가림 판정 격자 = 복셀 하나가 화면에서 차지하는 크기. 정점이 복셀마다 하나꼴이라
+        # 이보다 잘게 나누면 앞면 정점 사이 빈칸으로 뒷면 정점이 '보이는' 것으로 새어 나온다.
+        near = np.median(depth[valid]) if valid.any() else 1.0
+        cell = max(1.0, 1.5 * float(cam.K[0, 0]) * voxel_mm / max(float(near), 1e-6))
+        w, h = cam.size
+        visible = _visible_by_zbuffer(
+            uv[:, 0] / cell, uv[:, 1] / cell, -depth.astype(np.float32),
+            (int(np.ceil(w / cell)), int(np.ceil(h / cell))), OCCLUSION_DEPTH_TOL * voxel_mm,
+        )
+        tex = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        u, v = uv[:, 0].astype(np.float32), uv[:, 1].astype(np.float32)
+        # 색은 부품 표면에서만(정사영 경로와 같은 이유 — _ortho_view_samples).
+        surface = _part_surface(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), mask > 0)
+        sample, inside = _sample_bilinear(tex, surface, u, v)
+        anom, _ = _sample_bilinear(anomaly_map(img, mask, surface)[:, :, None], mask > 0, u, v)
+        out[name] = (sample, valid & visible & inside & (facing > 0), facing, anom[:, 0])
+    return out
+
+
+def _blend_texture(samples: dict, num_verts: int) -> np.ndarray:
+    """뷰별 샘플을 정점마다 상위 K 개 카메라의 dot^2 가중 평균으로 섞는다."""
+    colors = np.full((num_verts, 3), NEUTRAL_GRAY, dtype=np.float32)
+    if num_verts == 0:
+        return colors
+    # 상위 K 개만 반영하기 위해 각 정점이 현재까지 받은 가중치를 들고 있는다.
+    kept_weights = np.zeros((num_verts, TEXTURE_BLEND_VIEWS), dtype=np.float32)
+    kept_colors = np.zeros((num_verts, TEXTURE_BLEND_VIEWS, 3), dtype=np.float32)
+    for sample, ok, dot, *_ in samples.values():
         if not ok.any():
             continue
-
         # dot^2: 정면 카메라에 힘을 실어 흐릿해지지 않게 하면서 경계에서만 섞이게 한다.
         w = np.where(ok, dot * dot, 0.0).astype(np.float32)
         kept_weights, kept_colors = _keep_top_k(kept_weights, kept_colors, w, sample)
@@ -634,6 +870,110 @@ def _apply_texture_projection(
     has_color = weight_sum > 1e-6
     colors[has_color] = color_sum[has_color] / weight_sum[has_color, None]
     return colors
+
+
+def anomaly_map(image: np.ndarray, mask: np.ndarray, surface: np.ndarray | None = None) -> np.ndarray:
+    """원본 이미지에서 '부품 표면 위의 얇고 어두운 자국'(균열·긁힘·펜 자국) 강도 0~1.
+
+    실루엣 비교로는 원리적으로 못 잡는 결함이다 — 금이 가거나 자국이 나도 윤곽은 그대로다
+    (실측 라벨: crack, discoloration). 3D 로 옮기기 전에 이미지에서 찾는 이유: 이미지에는
+    투영 어긋남이 없다. 3D 정점은 이 맵을 '어디에 칠할지'에만 쓴다.
+
+    한계: 커널(실루엣의 ANOMALY_KERNEL_FRAC)보다 넓은 얼룩, 밝아지거나 색만 바뀐 변색은
+    잡지 못한다. 어두운 부품 위의 어두운 자국, 부품 윤곽에 걸쳐 한쪽이 트인 자국도
+    마찬가지다(_part_surface 가 표면에 둘러싸인 곳만 본다).
+
+    surface: 호출자가 이미 구한 _part_surface(gray, mask > 0). 주면 다시 계산하지 않는다 —
+    색 샘플링도 같은 표면을 쓰므로 뷰마다 두 번 구할 이유가 없다.
+    """
+    out = np.zeros(mask.shape, np.float32)
+    ys, xs = np.nonzero(mask)
+    if len(ys) == 0:
+        return out
+    size = max(int(ys.max() - ys.min()), int(xs.max() - xs.min())) + 1
+    k = max(7, int(size * ANOMALY_KERNEL_FRAC) | 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blackhat = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel).astype(np.float32) - gray
+    if surface is None:
+        surface = _part_surface(gray, mask > 0)
+    out[surface] =np.clip((blackhat[surface] - ANOMALY_BLACKHAT) / ANOMALY_BLACKHAT, 0.0, 1.0)
+    # 정점 투영은 몇 px 어긋난다. 1~3px 굵기 선을 정점이 비켜 가지 않게 살짝 넓힌다.
+    return cv2.dilate(out, np.ones((3, 3), np.uint8))
+
+
+def _part_surface(gray: np.ndarray, sil: np.ndarray) -> np.ndarray:
+    """실루엣 안에서 '부품 표면'인 픽셀(ANOMALY_SURFACE_* 참고).
+
+    밝은 픽셀 중 실루엣 중심부(거리 변환 상위 절반)와 겹치는 덩어리 하나만 남긴다 — 실루엣에
+    덧붙은 배경은 가장자리에 붙은 띠라 중심부와 떨어져 있다. 그 안의 구멍을 메워 '표면에
+    둘러싸인 자국'은 넣고, 테두리 바깥 틈처럼 한쪽이 트인 어두운 곳은 뺀다.
+    """
+    from scipy import ndimage
+
+    bright = sil & (gray >= ANOMALY_SURFACE_FRAC * float(np.percentile(gray[sil], 75)))
+    dist = cv2.distanceTransform(sil.astype(np.uint8), cv2.DIST_L2, 5)
+    labels, n = ndimage.label(bright)
+    if n == 0:
+        return bright
+    overlap = ndimage.sum(dist >= 0.5 * dist.max(), labels, range(1, n + 1))
+    if overlap.max() == 0:
+        return np.zeros_like(bright)
+    region = ndimage.binary_fill_holes(labels == 1 + int(np.argmax(overlap)))
+    e = 2 * ANOMALY_SURFACE_ERODE_PX + 1
+    return cv2.erode(region.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (e, e))) > 0
+
+
+def surface_anomaly(normals: np.ndarray, samples: dict, faces: np.ndarray | None = None):
+    """뷰별 표면 이상 맵(anomaly_map)을 정점에 옮긴다. (정점별 0~1 점수, 요약 stats).
+
+    samples[뷰] = (색, 유효, 시선 내적, 이상 맵 샘플). 그 뷰에서 실제로 보이고(가림 판정·
+    실루엣 안) 정면에 가까운 정점만 그 뷰의 판정을 받는다. 최종 점수는 뷰별 최댓값 —
+    자국은 그걸 정면으로 본 카메라 하나에만 또렷이 찍힌다.
+    """
+    n = len(normals)
+    score = np.zeros(n, np.float32)
+    per_view: dict[str, float] = {}
+    if n == 0:
+        return score, {"flagged_ratio": 0.0, "max_severity": 0.0, "num_regions": 0, "per_view": {}}
+
+    for name, (_, ok, facing, anom) in samples.items():
+        view_score = np.where(ok & (facing > ANOMALY_MIN_FACING), anom, 0.0).astype(np.float32)
+        per_view[name] = round(float((view_score > 0).mean()), 4)
+        np.maximum(score, view_score, out=score)
+
+    num_regions = 0
+    if faces is not None and len(faces) and score.any():
+        score, num_regions = _drop_small_regions(score, faces)
+
+    flagged = score > 0
+    return score, {
+        "flagged_ratio": round(float(flagged.mean()), 4),
+        "max_severity": round(float(score.max()), 3),
+        "num_regions": num_regions,
+        "per_view": per_view,
+    }
+
+
+def _drop_small_regions(score: np.ndarray, faces: np.ndarray) -> tuple[np.ndarray, int]:
+    """메시 위에서 이어진 표시 덩어리를 세고, ANOMALY_MIN_REGION 정점보다 작은 것은 지운다.
+
+    정점 한두 개짜리 점은 JPEG 노이즈·가장자리 샘플링 오차다. 결함 자국은 선이든 얼룩이든
+    여러 정점에 걸친다.
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    flagged = score > 0
+    edges = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    edges = edges[flagged[edges].all(axis=1)]       # 양 끝이 다 표시된 변만 잇는다(가는 선도 이어지게)
+    n = len(score)
+    graph = coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(n, n))
+    _, labels = connected_components(graph, directed=False)
+    sizes = np.bincount(labels[flagged], minlength=labels.max() + 1)
+    big = sizes >= ANOMALY_MIN_REGION
+    keep = flagged & big[labels]
+    return np.where(keep, score, 0.0).astype(np.float32), int(np.count_nonzero(big))
 
 
 def _view_texture(
@@ -673,23 +1013,26 @@ def _project_uv(verts: np.ndarray, right, up, size: int) -> tuple[np.ndarray, np
     """정점을 이미지 평면에 정사영한 '실수' 픽셀 좌표. _project_pixels 의 연속 버전."""
     pu = verts @ np.asarray(right, dtype=np.float32)
     pv = verts @ np.asarray(up, dtype=np.float32)
-    su = 0.5 * float(np.abs(right).sum())
-    sv = 0.5 * float(np.abs(up).sum())
-    fx = (pu / su * 0.5 + 0.5) * (size - 1)
-    fy = (0.5 - pv / sv * 0.5) * (size - 1)
+    s = _ortho_scale(right, up)
+    fx = (pu / s * 0.5 + 0.5) * (size - 1)
+    fy = (0.5 - pv / s * 0.5) * (size - 1)
     return fx.astype(np.float32), fy.astype(np.float32)
 
 
 def _visible_by_zbuffer(
-    fx: np.ndarray, fy: np.ndarray, depth: np.ndarray, size: int, tol: float
+    fx: np.ndarray, fy: np.ndarray, depth: np.ndarray, size, tol: float
 ) -> np.ndarray:
-    """같은 픽셀에 겹친 정점 중 카메라에 가장 가까운 것만 '보인다'고 판정한다."""
-    px = np.clip(np.rint(fx).astype(np.int32), 0, size - 1)
-    py = np.clip(np.rint(fy).astype(np.int32), 0, size - 1)
-    flat = py * size + px
+    """같은 픽셀에 겹친 정점 중 카메라에 가장 가까운 것만 '보인다'고 판정한다.
+
+    depth 는 클수록 카메라에 가깝다. size 는 정사각 한 변 또는 (가로, 세로).
+    """
+    w, h = (size, size) if np.isscalar(size) else size
+    px = np.clip(np.rint(fx).astype(np.int32), 0, w - 1)
+    py = np.clip(np.rint(fy).astype(np.int32), 0, h - 1)
+    flat = py * w + px
 
     # np.maximum.at 은 중복 인덱스를 모두 반영한다(단순 대입은 마지막 것만 남는다).
-    nearest = np.full(size * size, -np.inf, dtype=np.float32)
+    nearest = np.full(w * h, -np.inf, dtype=np.float32)
     np.maximum.at(nearest, flat, depth)
     return depth >= nearest[flat] - tol
 
@@ -702,11 +1045,11 @@ def _sample_bilinear(
     하나라도 배경이면 버리는 이유: 경계 텍셀을 섞으면 배경색이 옅게 배어들어
     결국 A(배경 번짐)를 다시 만든다.
     """
-    size = tex.shape[0]
-    x0 = np.clip(np.floor(fx).astype(np.int32), 0, size - 1)
-    y0 = np.clip(np.floor(fy).astype(np.int32), 0, size - 1)
-    x1 = np.clip(x0 + 1, 0, size - 1)
-    y1 = np.clip(y0 + 1, 0, size - 1)
+    h, w = tex.shape[:2]
+    x0 = np.clip(np.floor(fx).astype(np.int32), 0, w - 1)
+    y0 = np.clip(np.floor(fy).astype(np.int32), 0, h - 1)
+    x1 = np.clip(x0 + 1, 0, w - 1)
+    y1 = np.clip(y0 + 1, 0, h - 1)
     wx = np.clip(fx - x0, 0.0, 1.0).astype(np.float32)[:, None]
     wy = np.clip(fy - y0, 0.0, 1.0).astype(np.float32)[:, None]
 
@@ -763,6 +1106,104 @@ def _apply_defect_overlay(
     return colors.astype(np.float32)
 
 
+def _solidity(volume: np.ndarray) -> float:
+    """깎은 형상의 볼록도 = 복셀 부피 / 볼록 껍질 부피(1 = 볼록).
+
+    껍질은 복셀 '꼭짓점'으로 잡는다. 복셀 중심으로 잡으면 껍질이 반 칸씩 작아져 작은
+    형상일수록 비율이 1 을 넘게 부풀고(12³ 정육면체 1.30) 파인 곳이 가려진다. 꼭짓점은
+    겉면 복셀 것만 쓴다 — 볼록 껍질은 겉면만으로 정해진다.
+    """
+    from scipy import ndimage
+    from scipy.spatial import ConvexHull
+
+    occ = volume > 0.5
+    n = int(occ.sum())
+    if n < 8:
+        return 0.0
+    shell = np.argwhere(occ & ~ndimage.binary_erosion(occ))
+    corners = np.array([(i, j, k) for i in (0, 1) for j in (0, 1) for k in (0, 1)])
+    try:
+        return float(min(1.0, n / ConvexHull((shell[:, None, :] + corners).reshape(-1, 3)).volume))
+    except (RuntimeError, ValueError):      # 한 평면에 몰린 점(qhull 실패)
+        return 0.0
+
+
+def _quality(consistency: float, solidity: float, views_used: int) -> dict:
+    """결과를 믿어도 되는지. 아니면 이유와 사용자가 할 일을 함께 돌려준다(QUALITY_* 참고)."""
+    reasons, actions = [], []
+    if views_used < MIN_VIEWS:
+        reasons.append(f"쓸 수 있는 카메라가 {views_used}대뿐")
+        actions.append("카메라 연결과 config 의 cameras.*.roi(물체가 ROI 안에 있는지)를 확인")
+    elif consistency < QUALITY_MIN_CONSISTENCY:
+        reasons.append(f"카메라 간 형상 일치도 {consistency:.2f} < {QUALITY_MIN_CONSISTENCY}")
+        actions.append("물체를 치우고 '배경 캡처'를 새로 한 뒤 다시 촬영 · 물체 뒤(C2·C4 시야)를 비우거나 단색 배경판")
+    if solidity < QUALITY_MIN_SOLIDITY:
+        reasons.append(f"형상이 파여 있음(볼록도 {solidity:.2f} < {QUALITY_MIN_SOLIDITY}, 오목한 부품이면 정상일 수 있음)")
+        actions.append("조명·노출을 확인하고 다시 촬영 — 한 카메라에서 물체 일부가 배경에 묻혔을 수 있음")
+    return {"level": "low" if reasons else "ok", "consistency": round(consistency, 3),
+            "solidity": round(solidity, 3), "views_used": views_used,
+            "reasons": reasons, "actions": actions}
+
+
+def _paint_anomaly(colors: np.ndarray, score: np.ndarray) -> np.ndarray:
+    """표면 이상 점수를 주황으로 얹는다. 표시된 정점은 최소 절반은 섞는다 — 심각도가 낮다고
+    거의 안 보이게 칠하면, 검사자는 '표시 없음'으로 읽는다. 진하기로 심각도를 구분한다."""
+    w = np.where(score > 0, 0.5 + 0.5 * score, 0.0).astype(np.float32)[:, None]
+    return colors * (1 - w) + SUNSET * w
+
+
+def consistent_views(silhouettes: dict, directions=None):
+    """정사영 기준으로 나머지와 어긋나는 뷰를 뺀다. (남길 뷰, 뺀 뷰{이름: 점수}, 뷰별 점수).
+
+    거친 격자(CONSISTENCY_RES)에서 판정한다 — 부분집합마다 다시 깎기를 반복하므로.
+    CAD 비교도 같은 판정을 쓴다(오염된 뷰 하나가 자세 정합을 통째로 망치지 않게).
+    """
+    masks = {n: normalize_silhouette(s, CONSISTENCY_RES) for n, s in silhouettes.items()}
+    return _select_views(
+        masks, _ortho_projections(masks, CONSISTENCY_RES, directions), (CONSISTENCY_RES,) * 3
+    )
+
+
+def _carve_ortho(silhouettes: dict, directions, resolution: int):
+    """정사영 경로: 뷰 선택은 거친 격자에서, 최종 깎기는 resolution 에서."""
+    keep, dropped, scores = consistent_views(silhouettes, directions)
+    volume = _carve_visual_hull({n: silhouettes[n] for n in keep}, resolution, directions)
+    return volume, keep, dropped, scores
+
+
+def _metric_projections(names, cameras: dict, pts: np.ndarray) -> dict:
+    """원근 경로의 뷰별 (px, py, valid). 화면 밖·카메라 뒤 복셀은 valid=False."""
+    out = {}
+    for n in names:
+        uv, ok = cameras[n].project(pts)
+        w, h = cameras[n].size
+        px = np.clip(np.rint(uv[:, 0]).astype(np.int32), 0, w - 1)
+        py = np.clip(np.rint(uv[:, 1]).astype(np.int32), 0, h - 1)
+        out[n] = (px, py, ok)
+    return out
+
+
+def _carve_metric(silhouettes: dict, cameras: dict, rig, resolution: int):
+    """캘리브레이션 경로: 작업 공간(mm) 복셀을 실제 카메라 모델로 원본 이미지에 투영해 깎는다."""
+    pts, _, step = rig.grid(CONSISTENCY_RES)
+    # 거친 격자는 복셀 사이가 화면에서 몇 px 씩 벌어진다. 그 간격보다 크게 닫아야
+    # leave-one-out 그림자가 실루엣과 비교된다(벌어진 채면 점수가 고르게 낮아져 멀쩡한 뷰도 빠진다).
+    pitch = 1.0
+    for cam in cameras.values():
+        depth = cam.depth(pts)
+        front = depth > 1e-3
+        if front.any():
+            pitch = max(pitch, float(cam.K[0, 0]) * float(step[0]) / float(np.median(depth[front])))
+    keep, dropped, scores = _select_views(
+        silhouettes, _metric_projections(silhouettes, cameras, pts),
+        (CONSISTENCY_RES,) * 3, close=int(np.ceil(pitch)) + 1,
+    )
+    pts, lo, step = rig.grid(resolution)
+    used = {n: silhouettes[n] for n in keep}
+    volume = _carve(used, _metric_projections(used, cameras, pts), (resolution,) * 3)
+    return volume.astype(np.float32), keep, dropped, scores, lo, step
+
+
 def reconstruct_from_views(
     view_images: dict[str, np.ndarray],
     *,
@@ -771,25 +1212,49 @@ def reconstruct_from_views(
     classification: dict | None = None,
     backgrounds: dict[str, np.ndarray] | None = None,
     directions: dict[str, tuple[float, float, float]] | None = None,
+    rois: dict | None = None,
+    rig=None,
 ) -> ReconstructionResult:
-    """5뷰 이미지 → 3D 메시 + 불량 오버레이.
+    """5뷰 이미지 → 3D 메시 + 표면 이상(주황) 오버레이.
 
     view_images: {"cam1": BGR np.ndarray, ...}. 최소 3뷰 이상 권장.
     backgrounds: 같은 키의 빈 스캔대 이미지. 있으면 배경 차분으로 실루엣을 뽑는다.
-    classification: {"label": "good"|"defect", "confidence": 0~1, ...}
-      good 이면 defect_regions 를 무시하고 전체를 중립색으로 둔다.
+    rois: {뷰: 정규화 [x0, y0, x1, y1]}. 실루엣은 이 안에서만 뽑는다. 없는 뷰는 rig 의
+      작업 공간 투영, 그것도 없으면 화면 전체.
+    rig: rig_calibration.Rig. 보정된 뷰가 MIN_VIEWS 대 이상이면 그 뷰들만으로 실제 카메라 모델(원근)로
+      mm 단위 형상을 깎는다. 아니면 모든 뷰로 공칭 시선 방향(directions) + 정사영 근사 — rig 가 있는데
+      이쪽으로 돌았으면 stats["calibration_note"] 에 이유를 남긴다.
+    classification: {"label": "good"|"defect", ...}. good 이면 외부 defect_regions 를 무시한다.
+
+    주황은 외부 영역(defect_regions)과 별개로, 실제 촬영 색에서 찾은 표면 이상(균열·변색
+    자국)이다 — 라벨과 무관하게 증거가 있는 곳에만 칠한다(surface_anomaly).
+    나머지와 어긋나는 뷰(배경 오염·노출 과다)는 깎기·색칠 전에 뺀다(_select_views).
     """
     if len(view_images) < 2:
         raise ValueError("재구성에는 최소 2개 이상의 뷰가 필요합니다.")
 
     backgrounds = backgrounds or {}
+    cameras = {n: c for n, c in (rig.cameras.items() if rig is not None else ()) if n in view_images}
+    # 원근 경로는 보정 안 된 뷰를 버린다. 보정된 뷰가 MIN_VIEWS 대 미만이면 쓸 뷰가 모자라 품질이 늘 low 가
+    # 되므로(2대만 보정된 리그에서 실측), 그때는 모든 뷰를 쓰는 정사영 근사로 돌린다.
+    metric = len(cameras) >= MIN_VIEWS
+    if metric:
+        # 보정 안 된 뷰는 원근 경로에서 어디로 투영할지 모른다. 섞지 않고 뺀다.
+        view_images = {n: view_images[n] for n in cameras}
+    rois = dict(rois or {})
+    for n in cameras:
+        if rois.get(n) is None:
+            rois[n] = rig.auto_roi(n)
     silhouettes = {
-        name: extract_silhouette(img, backgrounds.get(name))
+        name: extract_silhouette(img, backgrounds.get(name), rois.get(name))
         for name, img in view_images.items()
     }
     coverage = {name: float((m > 0).mean()) for name, m in silhouettes.items()}
 
-    volume = _carve_visual_hull(silhouettes, resolution=resolution, directions=directions)
+    if metric:
+        volume, keep, dropped, scores, lo, step = _carve_metric(silhouettes, cameras, rig, resolution)
+    else:
+        volume, keep, dropped, scores = _carve_ortho(silhouettes, directions, resolution)
     occupancy = float(volume.mean())
 
     # 실루엣이 전 뷰에서 극히 작으면 배경 참조에 물체가 이미 찍혀 있다는 뜻이다.
@@ -818,42 +1283,76 @@ def reconstruct_from_views(
             f"뷰별 실루엣 비율: "
             f"{', '.join(f'{k} {v * 100:.0f}%' for k, v in sorted(coverage.items()))}"
             f" (가장 의심스러운 뷰: {worst})",
-            detail={"silhouette_coverage": {k: round(v, 4) for k, v in coverage.items()}},
+            detail={"silhouette_coverage": {k: round(v, 4) for k, v in coverage.items()},
+                    "dropped_views": dropped},
         )
 
     verts, faces, normals, raw_verts = _volume_to_mesh(volume)
 
-    # 실제 이미지 픽셀을 3D 표면에 텍스처로 매핑한다
-    base_colors = _apply_texture_projection(
-        raw_verts, normals, view_images, silhouettes, directions or VIEW_DIRECTIONS, resolution
-    )
+    # 실제 이미지 픽셀을 3D 표면에 텍스처로 매핑한다. 뺀 뷰는 색에도 쓰지 않는다 —
+    # 실루엣이 틀린 뷰는 바운딩박스 정규화(정사영)나 가림 판정이 어긋나 엉뚱한 색을 칠한다.
+    used = {n: view_images[n] for n in keep}
+    size_mm = None
+    if metric:
+        verts_mm = lo + (raw_verts.astype(np.float64) + 0.5) * (resolution - 1) * step
+        size_mm = [round(float(v), 1) for v in verts_mm.max(axis=0) - verts_mm.min(axis=0)]
+        samples = _metric_view_samples(verts_mm, normals, used, silhouettes, cameras, float(step[0]))
+    else:
+        samples = _ortho_view_samples(
+            raw_verts, normals, used, silhouettes, directions or VIEW_DIRECTIONS, resolution
+        )
+    score, anomaly = surface_anomaly(normals, samples, faces)
+    consistency = float(np.mean(list(scores.values()))) if scores else 0.0
+    quality = _quality(consistency, _solidity(volume), len(keep))
+    if quality["level"] == "low":
+        # 깨진 형상 위의 색·주황은 엉뚱한 곳을 가리킨다. 형상만 중립 회색으로 보이고 이유를 단다.
+        score = np.zeros_like(score)
+        anomaly = {**anomaly, "flagged_ratio": 0.0, "max_severity": 0.0, "num_regions": 0,
+                   "skipped": "형상 신뢰도가 낮아 표면 이상(주황)을 칠하지 않았습니다 — "
+                              + " · ".join(quality["reasons"])}
+        colors = np.full((len(verts), 3), NEUTRAL_GRAY, np.float32)
+    else:
+        colors = _paint_anomaly(_blend_texture(samples, len(verts)), score)
 
-    # 양품이면 하이라이트를 끈다.
+    # 외부 검출기(CNN 등)가 준 영역은 양품 라벨이면 끈다. 표면 이상은 라벨과 무관하다.
     label = (classification or {}).get("label", "unknown")
     regions = defect_regions if label != "good" else None
-    colors = _apply_defect_overlay(verts, regions, base_colors=base_colors)
+    colors = _apply_defect_overlay(verts, regions, base_colors=colors)
 
     stats = {
         "num_views": len(view_images),
+        "views_used": keep,
+        # 나머지와 어긋나 깎기·색칠에서 뺀 뷰와 그 leave-one-out 점수. 배경 오염·노출 과다가 흔한 원인.
+        "dropped_views": dropped,
+        "view_scores": {k: round(v, 3) for k, v in scores.items()},
         "resolution": resolution,
         "num_vertices": int(len(verts)),
         "num_faces": int(len(faces)),
         "voxel_occupancy": round(occupancy, 4),
         "silhouette_coverage": {k: round(v, 4) for k, v in coverage.items()},
         "classification": classification or {"label": "unknown"},
-        "num_defect_regions": len(regions) if regions else 0,
-        "mesh_method": "visual_hull",
-        # 카메라 방향(config 의 view_dir)이 얼마나 맞는지. 뷰 하나를 빼고 깎은 형상이
-        # 그 뷰의 실루엣을 얼마나 잘 예측하는가. config 를 고쳤을 때 오르면 개선이다.
-        # 주의: 절대값의 의미는 약하다. 같은 물체에서 설정끼리 비교할 때만 쓸 것.
-        "view_dir_consistency": round(
-            silhouette_consistency(silhouettes, directions or VIEW_DIRECTIONS, 32), 4
-        ),
+        "num_defect_regions": (len(regions) if regions else 0) + anomaly["num_regions"],
+        "anomaly": anomaly,
+        "mesh_method": "visual_hull_metric" if metric else "visual_hull",
+        # 남은 뷰의 leave-one-out 평균 — 카메라 기하(view_dir/캘리브레이션)와 실루엣이
+        # 서로 얼마나 맞는지. 절대값의 의미는 약하다. 같은 물체에서 설정끼리 비교할 때만 쓸 것.
+        "view_dir_consistency": round(consistency, 4),
+        # 이 결과를 믿어도 되는지 + 아니면 왜·무엇을 할지. 화면이 한 줄로 보여준다.
+        "quality": quality,
     }
+    if rig is not None and not metric:
+        # quality.reasons 에 넣지 않는다 — reasons 가 하나라도 있으면 level 이 low 가 되어 색·주황이 꺼진다.
+        stats["calibration_note"] = (
+            f"캘리브레이션된 카메라가 {len(cameras)}대뿐이라 근사 형상(정사영)으로 계산했습니다 "
+            f"— mm 치수는 {MIN_VIEWS}대 이상 보정해야 나옵니다."
+        )
+    if size_mm is not None:
+        stats["size_mm"] = size_mm
 
     logger.info(
-        "재구성 완료: %d뷰 → %d verts / %d faces (occupancy %.3f)",
-        len(view_images), len(verts), len(faces), occupancy,
+        "재구성 완료: %d뷰(제외 %s) → %d verts / %d faces (occupancy %.3f, 이상 %.1f%%)",
+        len(keep), list(dropped) or "-", len(verts), len(faces), occupancy,
+        100 * anomaly["flagged_ratio"],
     )
 
     return ReconstructionResult(

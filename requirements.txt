@@ -16,6 +16,9 @@ pyarrow==17.0.0
 # --- 3D 재구성 (marching cubes; 없으면 복셀 큐브 폴백) ---
 scikit-image==0.24.0
 
+# --- CAD 기준 모델 STEP/STP 읽기 (OpenCASCADE 내장). 없으면 STL 만 된다.
+gmsh==4.15.2
+
 # --- 불량 분류 CNN (ResNet18 + LoRA). CPU 버전으로 충분하며, GPU 가 있으면
 # --- https://pytorch.org 의 CUDA 휠로 바꿔 설치하세요.
 # 버전을 lerobot의 요구 범위(torch<2.12.0,>=2.7)에 미리 맞춰뒀다 — 안 맞추면

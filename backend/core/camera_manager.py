@@ -18,6 +18,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from functools import cache
 from statistics import median
 
 import cv2
@@ -47,6 +48,42 @@ def _claim_index(index: int) -> bool:
 def _release_index(index: int) -> None:
     with _claimed_lock:
         _claimed_indexes.discard(index)
+
+
+@cache
+def _procamp_interface():
+    """IAMVideoProcAmp 인터페이스 클래스. 한 번만 정의하고 돌려 쓴다(comtypes 는 선택 의존성이라 지연 생성)."""
+    from ctypes import HRESULT, POINTER, c_long
+    from comtypes import GUID, IUnknown, COMMETHOD
+
+    class IAMVideoProcAmp(IUnknown):
+        _iid_ = GUID("{C6E13360-30AC-11d0-A18C-00A0C9118956}")
+        _methods_ = [
+            COMMETHOD([], HRESULT, "GetRange", (["in"], c_long, "Property"),
+                      *[(["out"], POINTER(c_long), n) for n in ("pMin", "pMax", "pStep", "pDef", "pFlags")]),
+            COMMETHOD([], HRESULT, "Set", (["in"], c_long, "Property"),
+                      (["in"], c_long, "lValue"), (["in"], c_long, "Flags")),
+        ]
+
+    return IAMVideoProcAmp
+
+
+def set_power_line(index: int, hz: int) -> None:
+    """dshow 장치의 플리커 방지 주파수를 정한다(UVC PowerLineFrequency).
+
+    OpenCV 에는 이 프로퍼티가 없어 IAMVideoProcAmp 로 직접 넣는다. 같은 장치를
+    다른 필터 인스턴스로 잡아도 드라이버 값이 바뀌어 열린 스트림에 바로 적용된다(실측).
+    실패해도 영상은 나오므로 경고만 남긴다.
+    """
+    try:
+        from pygrabber.dshow_graph import SystemDeviceEnum
+        from pygrabber.dshow_ids import DeviceCategories
+
+        flt, _ = SystemDeviceEnum().get_filter_by_index(DeviceCategories.VideoInputDevice, index)
+        # 13 = KSPROPERTY_VIDEOPROCAMP_POWERLINE_FREQUENCY (1 = 50Hz, 2 = 60Hz), 2 = 수동 플래그
+        flt.QueryInterface(_procamp_interface()).Set(13, 2 if hz == 60 else 1, 2)
+    except Exception as exc:  # noqa: BLE001 — 장치·드라이버마다 실패 양상이 다르다
+        logger.warning("dshow %d 플리커 방지(%dHz) 설정 실패: %s", index, hz, exc)
 
 
 def init_com() -> None:
@@ -124,6 +161,15 @@ class _CameraWorker(threading.Thread):
     # (B227/G230/R227). 30 은 부족했다. 그 뒤에 잠가야 초록 캐스트 없이 고정된다.
     WB_SETTLE_FRAMES = 60
 
+    # 노출·밝기를 스트림이 돈 뒤 다시 넣는 시점(_open 주석 참조). 15fps 기준 약 1초.
+    EXPOSURE_REAPPLY_FRAMES = 15
+
+    # target_mean 밝기 맞춤(_level 참조). 4프레임마다 재고, 최대 약 6초 뒤엔 그대로 잠근다.
+    LEVEL_EVERY = 4
+    LEVEL_MAX_FRAMES = 90
+    LEVEL_TOLERANCE = 12
+    LEVEL_MIN_EXPOSURE = -7      # 이보다 짧으면 형광등 줄무늬가 다시 생긴다(실측)
+
     # 링버퍼 길이. 공통 기준시각에서 최대 ±(N/2 / fps) 초까지 되짚을 수 있다.
     # 8프레임 @30fps ≈ ±133ms 로, 카메라 간 위상차를 흡수하기에 충분하다.
     BUFFER_SIZE = 8
@@ -144,7 +190,13 @@ class _CameraWorker(threading.Thread):
         self._truncated_count = 0   # 대역폭 부족으로 버린 프레임 수(진단용)
         self._wb_locked = True      # _open() 에서 설정에 따라 다시 정한다
         self._wb_lock_at = 0
+        self._exposure_reapply_at = 0
+        self._cur_exposure = cfg.exposure
+        self._cur_brightness = cfg.brightness
+        self._level_until = 0
+        self._level_next = 0
         self._claimed: int | None = None   # 점유 중인 dshow 인덱스
+        self._power_line_warned = False    # power_line_hz 를 못 적용한다는 경고는 카메라당 한 번만
 
     # ---------- 라이프사이클 ----------
     def _open(self) -> bool:
@@ -208,22 +260,15 @@ class _CameraWorker(threading.Thread):
         # 지연 누적 방지. 일부 백엔드는 무시하므로 성공 여부를 신뢰하지 않는다.
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-        if self.cfg.exposure is not None:
-            # 자동 노출을 먼저 끄지 않으면 수동 값이 곧바로 덮어써진다.
-            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)   # 0.25 = manual (MSMF/DSHOW 공통)
-            cap.set(cv2.CAP_PROP_EXPOSURE, self.cfg.exposure)
-            # 게인은 노출로 번 밝기를 노이즈째로 증폭한다. 수동 노출을 쓸 때는
-            # 0 으로 두고 밝기는 brightness 로만 맞춘다.
-            cap.set(cv2.CAP_PROP_GAIN, 0)
-        else:
-            # 자동 노출을 '명시적으로 다시 켠다'. UVC 카메라는 설정을 드라이버에
-            # 저장하므로, 과거 노출 튜닝 실험이 남긴 수동 노출 값이 계속 살아남는다 —
-            # 실측: Arducam 5대 전부 완전 검은 화면(mean 0.0)이었고, 자동 노출을
-            # 켜자마자 정상 복귀했다. (자동 WB 재활성화와 같은 원리)
-            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
-
-        if self.cfg.brightness is not None:
-            cap.set(cv2.CAP_PROP_BRIGHTNESS, self.cfg.brightness)
+        # 실제로 쓰는 노출·밝기. target_mean 이 있으면 열린 뒤 화면을 보고 조정한다.
+        self._cur_exposure = self.cfg.exposure
+        self._cur_brightness = self.cfg.brightness
+        self._level_until = 0
+        self._apply_exposure(cap)
+        # 스트림이 돌기 전에 넣은 노출·밝기는 드라이버가 '적용됨'으로 보고하면서도
+        # 센서에 안 먹는다 — 실측(2026-10-12): 열자마자 넣으면 하얗게 날아가고(mean 207),
+        # 같은 값을 스트리밍 중에 다시 넣으면 정상(mean 125). 그래서 몇 프레임 뒤 한 번 더 넣는다.
+        self._exposure_reapply_at = self._frame_index + self.EXPOSURE_REAPPLY_FRAMES
 
         if self.cfg.lock_white_balance and self.cfg.white_balance is not None:
             # 색온도를 명시했으면 처음부터 그 값으로 고정한다.
@@ -245,6 +290,82 @@ class _CameraWorker(threading.Thread):
         self._cap = cap
         self._error = None
         return True
+
+    def _level(self, image: np.ndarray) -> None:
+        """열린 직후 몇 초 동안 화면 평균 밝기를 target_mean 쪽으로 맞추고 잠근다.
+
+        고정 노출은 조명이 바뀌면 그대로 날아간다(실측: 같은 -6/-32 가 낮엔 mean 125,
+        다른 때엔 207). 자동 노출은 밝은 방에서 셔터를 1/120초보다 짧게 잡아 줄무늬가
+        생긴다. 그래서 줄무늬가 안 생기는 노출은 유지한 채 밝기(brightness)로 먼저 맞추고,
+        밝기가 바닥인데도 밝을 때만 노출을 한 단계(-7, 1/128초 ≈ 플리커 주기) 줄인다.
+        잠근 뒤에는 바꾸지 않는다 — 계속 바꾸면 3D 검사의 배경 차분이 깨진다.
+        """
+        if self._cur_exposure is None:
+            # 자동 노출은 밝기를 바꿀 때마다 같이 움직여 한도 안에 수렴하지 못한다 — 수동 노출일 때만 의미가 있다.
+            self._level_until = 0
+            logger.warning("카메라 %s: 자동 노출(exposure 미지정)이라 target_mean 밝기 맞춤을 건너뜁니다", self.cfg.name)
+            return
+        target = self.cfg.target_mean
+        mean = float(cv2.cvtColor(image[::8, ::8], cv2.COLOR_BGR2GRAY).mean())
+        err = mean - target
+        if abs(err) <= self.LEVEL_TOLERANCE or self._frame_index >= self._level_until:
+            self._level_until = 0
+            logger.info("카메라 %s 밝기 맞춤 완료: mean %.0f (노출 %s, 밝기 %s)",
+                        self.cfg.name, mean, self._cur_exposure, self._cur_brightness)
+            return
+        step = min(max(abs(err) * 0.4, 4), 24)
+        # 밝기 범위 -64..64 와 기본값 0 은 Arducam 기준이다. 다른 기종에 target_mean 을 쓰려면
+        # IAMVideoProcAmp.GetRange 로 실제 범위와 기본값을 읽어 와야 한다.
+        b = self._cur_brightness if self._cur_brightness is not None else 0
+        if err > 0:
+            if b > -64:
+                self._cur_brightness = max(-64, b - step)
+            elif self._cur_exposure is not None and self._cur_exposure > self.LEVEL_MIN_EXPOSURE:
+                self._cur_exposure -= 1
+        else:
+            if b < 64:
+                self._cur_brightness = min(64, b + step)
+            elif self._cur_exposure is not None and self._cur_exposure < -5:
+                self._cur_exposure += 1
+        if self._cap is not None:
+            self._apply_exposure(self._cap)
+
+    def _apply_exposure(self, cap) -> None:
+        if self._cur_exposure is not None:
+            # 자동 노출을 먼저 끄지 않으면 수동 값이 곧바로 덮어써진다.
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)   # 0.25 = manual (MSMF/DSHOW 공통)
+            cap.set(cv2.CAP_PROP_EXPOSURE, self._cur_exposure)
+            # 게인은 노출로 번 밝기를 노이즈째로 증폭한다. 수동 노출을 쓸 때는
+            # 0 으로 두고 밝기는 brightness 로만 맞춘다.
+            cap.set(cv2.CAP_PROP_GAIN, 0)
+        else:
+            # 자동 노출을 '명시적으로 다시 켠다'. UVC 카메라는 설정을 드라이버에
+            # 저장하므로, 과거 노출 튜닝 실험이 남긴 수동 노출 값이 계속 살아남는다 —
+            # 실측: Arducam 5대 전부 완전 검은 화면(mean 0.0)이었고, 자동 노출을
+            # 켜자마자 정상 복귀했다. (자동 WB 재활성화와 같은 원리)
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+
+        if self._cur_brightness is not None:
+            cap.set(cv2.CAP_PROP_BRIGHTNESS, self._cur_brightness)
+        if self.cfg.contrast is not None:
+            cap.set(cv2.CAP_PROP_CONTRAST, self.cfg.contrast)
+        if self.cfg.gamma is not None:
+            cap.set(cv2.CAP_PROP_GAMMA, self.cfg.gamma)
+
+    def _apply_power_line(self) -> None:
+        # 열린 뒤 재적용 지점에서 한 번만 부른다. set_power_line 은 부를 때마다 DirectShow 를 다시 열거하고,
+        # 그 사이 USB 재열거로 인덱스가 밀리면 다른 카메라에 들어간다 — 밝기 맞춤(_level)이 부르면 안 된다.
+        hz = self.cfg.power_line_hz
+        if not hz:
+            return
+        claimed = self._claimed   # 감시 스레드의 force_reopen 이 그 사이 None 으로 비울 수 있어 한 번만 읽는다
+        if claimed is not None:
+            set_power_line(claimed, hz)
+        elif not self._power_line_warned:
+            # 정수 인덱스(device)로 연 카메라는 dshow 인덱스를 몰라 설정할 수 없다. match_name 으로 지목해야 한다.
+            self._power_line_warned = True
+            logger.warning("카메라 %s: dshow 인덱스를 몰라 power_line_hz=%d 를 적용하지 못합니다 (match_name 으로 연 카메라에만 적용)",
+                           self.cfg.name, hz)
 
     def run(self) -> None:
         if self.cfg.match_name and not self._simulate:
@@ -283,6 +404,20 @@ class _CameraWorker(threading.Thread):
 
             now = time.monotonic()
             self._publish(image, now)
+
+            if self._exposure_reapply_at and self._frame_index >= self._exposure_reapply_at:
+                if self._cap is not None:
+                    self._apply_exposure(self._cap)
+                    self._apply_power_line()
+                self._exposure_reapply_at = 0
+                if self.cfg.target_mean is not None:
+                    self._level_until = self._frame_index + self.LEVEL_MAX_FRAMES
+                    self._level_next = self._frame_index + self.LEVEL_EVERY
+
+            # 새 값이 센서에 반영될 몇 프레임을 기다렸다가 다시 잰다.
+            if self._level_until and self._frame_index >= self._level_next:
+                self._level(image)
+                self._level_next = self._frame_index + self.LEVEL_EVERY
 
             # 자동 WB 가 수렴한 뒤 잠근다(열자마자 끄면 초록 캐스트에 박제된다).
             # 재연결 때도 같은 경로로 다시 수렴→잠금 된다.
